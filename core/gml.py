@@ -6,8 +6,8 @@ Jeden parser GML dla całej wtyczki.
     atrybuty = tekst każdego elementu-dziecka obiektu (jak w 1.x),
     geometria = GDAL/OGR (obsługuje GML 2/3/3.2, multi, łuki, powierzchnie).
 
-`read_typed(gml)` – cała odpowiedź przez sterownik GML w GDAL (typy pól z danych);
-    dla skorowidzów i serwerów, których odpowiedzi DOM nie rozbiera.
+`read_typed(gml)` – cała odpowiedź jako warstwa OGR w QGIS (typy pól z danych),
+    dokładnie jak w 1.x; dla skorowidzów.
 
 Kolejność osi: zamiana X/Y, gdy srsName jest w postaci URN lub
 http://www.opengis.net/def/crs/... i układ ma kolejność N/E (np. EPSG:2180),
@@ -15,7 +15,8 @@ tak jak w QGIS i GeoServerze. Brak srsName = konwencja usług GUGiK (N/E).
 
 Bez QgsOgcUtils.geometryFromGML: dla GML 3.2 z srsName URN zamyka QGIS 4.
 """
-import uuid
+import os
+import warnings
 from functools import lru_cache
 from typing import Optional
 
@@ -27,11 +28,11 @@ from . import log
 from ..qt_compat import dom_set_content
 
 try:
-    from osgeo import gdal, ogr, osr
-    ogr.UseExceptions()
-    osr.UseExceptions()
+    # Bez UseExceptions(): to przełącznik globalny dla całego QGIS (inne wtyczki,
+    # Processing). Błędy obsługujemy po zwracanych wartościach.
+    from osgeo import ogr, osr
 except ImportError:  # pragma: no cover – GDAL jest częścią każdej instalacji QGIS
-    gdal = ogr = osr = None
+    ogr = osr = None
 
 WFS2_NS = "http://www.opengis.net/wfs/2.0"
 GEOMETRY_PROPERTIES = ("geom", "msGeometry", "geometry", "GEOMETRIA")
@@ -61,9 +62,12 @@ def axis_swapped(srs_name: str) -> bool:
     if osr is None:
         return False
     try:
-        srs = osr.SpatialReference()
-        srs.SetFromUserInput(s)
-        return bool(srs.EPSGTreatsAsNorthingEasting() or srs.EPSGTreatsAsLatLong())
+        with warnings.catch_warnings():  # GDAL ≥3.9: FutureWarning o domyślnym trybie wyjątków
+            warnings.simplefilter("ignore", FutureWarning)
+            srs = osr.SpatialReference()
+            if srs.SetFromUserInput(s) != 0:
+                return False
+            return bool(srs.EPSGTreatsAsNorthingEasting() or srs.EPSGTreatsAsLatLong())
     except Exception:
         return False
 
@@ -73,10 +77,12 @@ def geometry_from_element(elem: QDomElement) -> Optional[QgsGeometry]:
     if ogr is None or elem is None or elem.isNull():
         return None
     try:
-        og = ogr.CreateGeometryFromGML(_element_to_string(elem))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            og = ogr.CreateGeometryFromGML(_element_to_string(elem))
     except Exception as exc:
+        og = None
         log.warning(f"[GML] Nieczytelna geometria {elem.localName()}: {exc}")
-        return None
     if og is None or og.IsEmpty():
         return None
     geom = QgsGeometry.fromWkt(og.ExportToIsoWkt())
@@ -135,44 +141,56 @@ def parse_features(gml: str) -> list:
     return features
 
 
-# ---------------------------------------------------------------- odczyt przez GDAL
+# ---------------------------------------------------------------- odczyt jako warstwa OGR
+
+def service_exception(text: str) -> str:
+    """Treść ows:ExceptionReport z odpowiedzi serwera albo ''."""
+    if "ExceptionReport" not in text[:2000] and "ServiceException" not in text[:2000]:
+        return ""
+    doc = QDomDocument()
+    if not dom_set_content(doc, text):
+        return text[:300]
+    for tag in ("ExceptionText", "ServiceException"):
+        nodes = doc.elementsByTagNameNS("*", tag)
+        if nodes.count() == 0:
+            nodes = doc.elementsByTagName(tag)
+        if nodes.count():
+            return nodes.item(0).toElement().text().strip()
+    return doc.documentElement().text().strip()[:300]
+
 
 def read_typed(gml: str) -> list:
     """
-    Cała odpowiedź przez sterownik GML w GDAL, w pamięci (/vsimem/, bez plików
-    tymczasowych). Zwraca [{'geom': QgsGeometry, 'attrs': {...}}] z typami pól GDAL.
+    Cała odpowiedź wczytana jako warstwa OGR (plik tymczasowy, jak w 1.x).
+    Zwraca [{'geom': QgsGeometry, 'attrs': {...}}] z typami pól z danych.
+    Gdy serwer zwrócił wyjątek zamiast danych – RuntimeError z jego treścią.
     """
-    if gdal is None:
-        return []
-    path = f"/vsimem/pd_gugik_{uuid.uuid4().hex}.gml"
-    gdal.FileFromMemBuffer(path, gml.encode("utf-8") if isinstance(gml, str) else gml)
+    import shutil
+    import tempfile
+    from qgis.core import QgsVectorLayer
+
+    error = service_exception(gml)
+    if error:
+        raise RuntimeError(f"Serwer zwrócił błąd: {error}")
+
+    folder = tempfile.mkdtemp(prefix="pd_gugik_")
+    path = os.path.join(folder, "odpowiedz.gml")
     features = []
-    ds = None
-    # Opcja tylko dla tego wątku: odpowiedź nie ma odnośników xlink do rozwiązywania
-    gdal.SetThreadLocalConfigOption("GML_SKIP_RESOLVE_ELEMS", "ALL")
+    vl = None
     try:
-        ds = ogr.Open(path)
-        if ds is None:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(gml)
+        vl = QgsVectorLayer(path, "tmp", "ogr")
+        if not vl.isValid():
+            log.warning("[GML] Odpowiedź nie dała się wczytać jako warstwa")
             return []
-        for li in range(ds.GetLayerCount()):
-            layer = ds.GetLayer(li)
-            defn = layer.GetLayerDefn()
-            names = [defn.GetFieldDefn(k).GetName() for k in range(defn.GetFieldCount())]
-            for f in layer:
-                og = f.GetGeometryRef()
-                if og is None or og.IsEmpty():
-                    continue
-                geom = QgsGeometry.fromWkt(og.ExportToIsoWkt())
-                if geom.isNull():
-                    continue
-                features.append({"geom": geom,
-                                 "attrs": {n: f.GetField(n) for n in names}})
-    except Exception as exc:
-        log.warning(f"[GML] Odczyt przez GDAL nie powiódł się: {exc}")
+        names = vl.fields().names()
+        for feat in vl.getFeatures():
+            if not feat.hasGeometry():
+                continue
+            features.append({"geom": QgsGeometry(feat.geometry()),
+                             "attrs": {n: feat[n] for n in names}})
     finally:
-        ds = None
-        gdal.SetThreadLocalConfigOption("GML_SKIP_RESOLVE_ELEMS", None)
-        for leftover in gdal.ReadDir("/vsimem/") or []:
-            if leftover.startswith(path[len("/vsimem/"):-4]):
-                gdal.Unlink("/vsimem/" + leftover)
+        del vl  # zwalnia plik (Windows) przed usunięciem
+        shutil.rmtree(folder, ignore_errors=True)
     return features

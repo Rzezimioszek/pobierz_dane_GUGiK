@@ -55,3 +55,28 @@ def test_read_typed_reads_all_features():
     assert len(feats) == 2
     c = feats[0]["geom"].centroid().asPoint()
     assert 284100 < c.x() < 284300 and 366300 < c.y() < 366400
+
+
+def test_read_typed_skorowidz():
+    feats = _gml().read_typed(fixture_text("skorowidz_orto.gml"))
+    assert len(feats) == 1
+    a = feats[0]["attrs"]
+    assert a["godlo"] == "M-34-64-C-c-4-2" and a["url_do_pobrania"].endswith(".tif")
+    c = feats[0]["geom"].centroid().asPoint()
+    assert 284000 < c.x() < 285000 and 366000 < c.y() < 367000
+
+
+def test_service_exception_is_reported():
+    import pytest
+    report = ('<?xml version="1.0"?><ows:ExceptionReport xmlns:ows="http://www.opengis.net/ows/1.1">'
+              '<ows:Exception exceptionCode="InvalidParameterValue"><ows:ExceptionText>'
+              'Unknown typename gugik:SkorowidzOrtofomapy1999</ows:ExceptionText></ows:Exception>'
+              '</ows:ExceptionReport>')
+    with pytest.raises(RuntimeError, match="SkorowidzOrtofomapy1999"):
+        _gml().read_typed(report)
+
+
+def test_gdal_exceptions_not_switched_on_globally():
+    from osgeo import ogr
+    _gml()
+    assert ogr.GetUseExceptions() == 0

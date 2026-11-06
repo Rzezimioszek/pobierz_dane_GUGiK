@@ -85,15 +85,35 @@ AVAILABLE_LAYERS = [
         "zbior":         "egib",
         "layer_pattern": "punkty_graniczne",
     },
+    # RCN w usługach powiatowych ma schemat jak RCN zbiorczy (działki, budynki, lokale);
+    # nazwy warstw i style jak dla RCN zbiorczego, z sufiksem TERYT
     {
-        "key":           "rcn_tran",
-        "label":         "Lokalizacja transakcji (RCN)",
+        "key":           "rcn_dzi",
+        "label":         "Działki (RCN)",
         "zbior":         "rcn",
-        "layer_pattern": "transakcje",
+        "layer_pattern": "dzialki",
+        "layer_name":    "Dzialki_RCN",
+        "style":         "dzialki_rcn",
+    },
+    {
+        "key":           "rcn_bud",
+        "label":         "Budynki (RCN)",
+        "zbior":         "rcn",
+        "layer_pattern": "budynki",
+        "layer_name":    "Budynki_RCN",
+        "style":         "budynki_rcn",
+    },
+    {
+        "key":           "rcn_lok",
+        "label":         "Lokale (RCN)",
+        "zbior":         "rcn",
+        "layer_pattern": "lokale",
+        "layer_name":    "Lokale_RCN",
+        "style":         "lokale_rcn",
     },
     {
         "key":           "bdot500",
-        "label":         "Budynki i obiekty towarzysząc (BDOT500)",
+        "label":         "Budynki i obiekty towarzyszące (BDOT500)",
         "zbior":         "bdot500",
         "layer_pattern": "budynki",
     },
@@ -481,12 +501,14 @@ class EziudpWfsTask(QgsTask):
         report = WfsLayerReport(teryt=teryt, key=key, wfs_url=wfs_url,
                                 wfs_layer=wfs_layer_name)
 
-        # Harmonizer używany tylko do LAYER_NAME i nazwy stylu
-        harmonizer = get_harmonizer(
-            AVAILABLE_LAYERS_BY_KEY[key]["zbior"], wfs_layer_name
-        )
-        base_layer_name = harmonizer.LAYER_NAME if harmonizer else key
-        style_name = getattr(harmonizer, "STYLE", None) or base_layer_name
+        # Nazwa warstwy i styl: z konfiguracji warstwy, a jeśli brak – z harmonizatora
+        cfg = AVAILABLE_LAYERS_BY_KEY[key]
+        harmonizer = None
+        if not cfg.get("layer_name"):
+            harmonizer = get_harmonizer(cfg["zbior"], wfs_layer_name)
+        base_layer_name = cfg.get("layer_name") or (harmonizer.LAYER_NAME if harmonizer else key)
+        style_name = (cfg.get("style") or getattr(harmonizer, "STYLE", None)
+                      or base_layer_name)
         mem_layer_name = f"{base_layer_name}_{teryt}"
 
         # Warstwa już jest w projekcie (np. ponowne uruchomienie) – pomijamy

@@ -7,6 +7,7 @@ Odpowiada za:
   - parsowanie HTML tabeli z adresami WFS
   - wykrywanie nazw warstw WFS przez GetCapabilities
 """
+import os
 import re
 import urllib.parse
 from dataclasses import dataclass, field
@@ -55,10 +56,11 @@ ZBIOR_CONFIG: dict = {
         "id_field": "idPunktu",
     },
     "rcn": {
-        "label": "Transakcje (RCN)",
+        "label": "Rejestr cen nieruchomości (RCN)",
         "eziudp_zbior": "rcn",
+        # Schemat jak RCN zbiorczy: osobne warstwy działek, budynków i lokali
         "layer_patterns": [
-            "transakcje",
+            "dzialki", "budynki", "lokale", "transakcje",
         ],
         "geom_field": "geom",
         "id_field": "idDzialki",
@@ -165,10 +167,17 @@ class EziudpClient:
             result.records = records
 
             if not records:
+                dump = self._dump_for_diagnosis(html, teryt, cfg["eziudp_zbior"])
                 result.success = False
                 result.error_message = (
                     f"EZiUDP nie zwrócił usługi pobierania dla "
                     f"TERYT={teryt}, zbior={cfg['eziudp_zbior']}"
+                    + (f" (odpowiedź zapisana w {dump})" if dump else "")
+                )
+                QgsMessageLog.logMessage(
+                    f"[EziudpClient] {url} → brak adresu WFS. Początek odpowiedzi: "
+                    f"{self._strip_tags(html)[:300]!r}",
+                    LOG_TAG, Qgis.MessageLevel.Warning,
                 )
 
         except Exception as exc:
@@ -306,54 +315,82 @@ class EziudpClient:
 
     def _parse_html(self, html: str) -> list:
         """
-        Parsuje HTML z eziudp – tabela wynikowa ma kolumny:
-          0: identyfikator zbioru
-          1: organ
-          2: nazwa zbioru
-          3: TERYT
-          4: typy usług
-          5: WMS (href)
-          6: WFS / usługa pobierania (href)
+        Wyciąga z odpowiedzi EZiUDP wiersze tabeli z adresami usług.
+
+        Dawny układ (kolumny 0–6: id, organ, nazwa, TERYT, typy, WMS, WFS,
+        wiersze class="row") jest obsługiwany wprost. Gdy strona wygląda
+        inaczej, każdy wiersz <tr> jest przeszukiwany po linkach: WFS =
+        link z 'wfs' w adresie, WMS = link z 'wms'.
         """
-        records = []
         html = html.replace("&amp;", "&").replace("&nbsp;", " ")
-
-        row_re = re.compile(
-            r'<tr[^>]+class=["\']row["\'][^>]*>(.*?)</tr>',
-            re.DOTALL | re.IGNORECASE,
+        records = self._parse_html_columns(html)
+        if not any(r.url_wfs for r in records):
+            records = self._parse_html_links(html)
+        QgsMessageLog.logMessage(
+            f"[EziudpClient] Znaleziono {len(records)} rekordów w HTML "
+            f"({sum(1 for r in records if r.url_wfs)} z adresem WFS)",
+            LOG_TAG, Qgis.MessageLevel.Info,
         )
-        cell_re = re.compile(
-            r'<td[^>]*>(.*?)</td>',
-            re.DOTALL | re.IGNORECASE,
-        )
-        href_re = re.compile(r'href=["\']([^"\']+)["\']', re.IGNORECASE)
+        return records
 
+    _ROW_RE = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.DOTALL | re.IGNORECASE)
+    _CELL_RE = re.compile(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", re.DOTALL | re.IGNORECASE)
+    _HREF_RE = re.compile(r"href=[\"']([^\"']+)[\"']", re.IGNORECASE)
+    _TERYT_RE = re.compile(r"\b(\d{2}(?:\d{2}(?:\d{2}_?\d)?)?)\b")
+
+    def _parse_html_columns(self, html: str) -> list:
+        """Dawny układ: wiersze class="row", 7+ kolumn w ustalonej kolejności."""
+        records = []
+        row_re = re.compile(r'<tr[^>]+class=["\']row["\'][^>]*>(.*?)</tr>',
+                            re.DOTALL | re.IGNORECASE)
         for row_match in row_re.finditer(html):
-            cells = cell_re.findall(row_match.group(1))
+            cells = self._CELL_RE.findall(row_match.group(1))
             if len(cells) < 7:
                 continue
-
             rec = EziudpRecord(
                 teryt=self._strip_tags(cells[3]).strip(),
                 nazwa_zbioru=self._strip_tags(cells[2]).strip(),
                 organ=self._strip_tags(cells[1]).strip(),
             )
-
-            wms_links = href_re.findall(cells[5])
+            wms_links = self._HREF_RE.findall(cells[5])
             if wms_links:
                 rec.url_wms = self._clean_service_url(wms_links[0])
-
-            wfs_links = href_re.findall(cells[6])
+            wfs_links = self._HREF_RE.findall(cells[6])
             if wfs_links:
                 rec.url_wfs = self._clean_service_url(wfs_links[0])
-
             records.append(rec)
-
-        QgsMessageLog.logMessage(
-            f"[EziudpClient] Znaleziono {len(records)} rekordów w HTML",
-            LOG_TAG, Qgis.MessageLevel.Info,
-        )
         return records
+
+    def _parse_html_links(self, html: str) -> list:
+        """Dowolny układ: w każdym wierszu szukamy linków do usług WFS i WMS."""
+        records = []
+        rows = self._ROW_RE.findall(html) or [html]
+        for row in rows:
+            links = [l.strip() for l in self._HREF_RE.findall(row)]
+            wfs = [l for l in links if "wfs" in l.lower()]
+            if not wfs:
+                continue
+            wms = [l for l in links if "wms" in l.lower() and "wfs" not in l.lower()]
+            text = re.sub(r"<[^>]+>", " ", row)
+            teryt = self._TERYT_RE.search(text)
+            records.append(EziudpRecord(
+                teryt=teryt.group(1) if teryt else "",
+                url_wfs=self._clean_service_url(wfs[0]),
+                url_wms=self._clean_service_url(wms[0]) if wms else "",
+            ))
+        return records
+
+    @staticmethod
+    def _dump_for_diagnosis(html: str, teryt: str, zbior: str) -> str:
+        """Zapisuje odpowiedź EZiUDP do pliku tymczasowego; zwraca ścieżkę albo ''."""
+        try:
+            import tempfile
+            path = os.path.join(tempfile.gettempdir(), f"pd_gugik_eziudp_{teryt}_{zbior}.html")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(html)
+            return path
+        except OSError:
+            return ""
 
     @staticmethod
     def _strip_tags(text: str) -> str:
