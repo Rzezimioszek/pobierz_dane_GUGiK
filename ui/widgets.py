@@ -13,7 +13,7 @@ from qgis.core import QgsSettings
 from qgis.gui import QgsFileWidget, QgsMapLayerComboBox
 from qgis.PyQt.QtCore import Qt, pyqtSignal
 from qgis.PyQt.QtWidgets import (
-    QButtonGroup, QCheckBox, QComboBox, QCompleter, QFileDialog, QFrame, QGroupBox,
+    QButtonGroup, QCheckBox, QComboBox, QCompleter, QFileDialog, QFrame,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit,
     QProgressBar, QPushButton, QRadioButton, QTabWidget, QToolButton, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget,
@@ -40,18 +40,62 @@ _PRG_GROUPS = [
 ]
 
 
-def hint_label() -> QLabel:
+def hint_label(name: str = "hint") -> QLabel:
     lbl = QLabel()
     lbl.setWordWrap(True)
-    lbl.setStyleSheet("color: palette(mid);")
+    lbl.setObjectName(name)
     return lbl
 
 
+def set_state(widget, state: str) -> None:
+    """Ustawia właściwość „state” używaną w style.qss i odświeża wygląd."""
+    if widget.property("state") == state:
+        return
+    widget.setProperty("state", state)
+    widget.style().unpolish(widget)
+    widget.style().polish(widget)
+
+
+class StepCard(QFrame):
+    """Karta kroku: numer w kółku (szary → kolor, gdy krok kompletny), tytuł, skrót wyboru."""
+
+    def __init__(self, number: int, title: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName("stepCard")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 8, 10, 10)
+        outer.setSpacing(6)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        self.badge = QLabel(str(number))
+        self.badge.setObjectName("stepBadge")
+        head.addWidget(self.badge)
+        self.title = QLabel(title)
+        self.title.setObjectName("stepTitle")
+        head.addWidget(self.title)
+        head.addStretch(1)
+        self.summary = QLabel()
+        self.summary.setObjectName("stepSummary")
+        head.addWidget(self.summary)
+        outer.addLayout(head)
+        self.body = QVBoxLayout()
+        self.body.setContentsMargins(0, 0, 0, 0)
+        outer.addLayout(self.body)
+        self.set_state("idle")
+
+    def set_state(self, state: str, summary: str = "") -> None:
+        """idle – jeszcze nie dotyczy, todo – czegoś brakuje, done – gotowe."""
+        set_state(self, state)
+        set_state(self.badge, state)
+        self.badge.setText("✓" if state == "done" else self.badge.property("number") or self.badge.text())
+        self.summary.setText(summary)
+
+
 def step_box(number: int, title: str) -> tuple:
-    box = QGroupBox(f"{number}. {title}")
-    lay = QVBoxLayout(box)
-    lay.setContentsMargins(8, 8, 8, 8)
-    return box, lay
+    card = StepCard(number, title)
+    card.badge.setProperty("number", str(number))
+    card.set_state("idle")
+    return card, card.body
 
 
 # ====================================================================== krok 1
@@ -91,8 +135,9 @@ class SourcePicker(QWidget):
         lay.addWidget(self.search)
 
         self.tree = QTreeWidget()
+        self.tree.setObjectName("sourceTree")
         self.tree.setHeaderHidden(True)
-        self.tree.setMinimumHeight(230)
+        self.tree.setMinimumHeight(255)
         self.tree.itemChanged.connect(self._on_item_changed)
         lay.addWidget(self.tree)
 
@@ -337,7 +382,7 @@ class ScopePicker(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         self.tabs = QTabWidget()
-        self.tabs.setDocumentMode(True)
+        self.tabs.setObjectName("scopeTabs")
         lay.addWidget(self.tabs)
         self.tabs.tabBar().setExpanding(False)
         self.tabs.tabBar().setUsesScrollButtons(True)
@@ -367,6 +412,7 @@ class ScopePicker(QWidget):
         self.teryt.teryt_changed.connect(lambda *_: self._unit_changed())
         lay.addWidget(self.teryt)
         self.unit_hint = hint_label()
+        self.unit_hint.setVisible(False)
         lay.addWidget(self.unit_hint)
         self.chk_precise = QCheckBox(tr("Dokładny kształt jednostki"))
         self.chk_precise.setToolTip(tr("Zapytanie z dokładną granicą zamiast prostokąta – "
@@ -386,6 +432,7 @@ class ScopePicker(QWidget):
     def _unit_changed(self):
         t = self.teryt.get_resolved_teryt()
         self.unit_hint.setText(self.units.describe(t) if t else "")
+        self.unit_hint.setVisible(bool(self.unit_hint.text()))
         self.changed.emit()
 
     def _tab_map(self) -> QWidget:
@@ -585,9 +632,9 @@ class OutputPicker(QWidget):
 
         # Pola działek EGiB
         self.btn_fields = QToolButton()
+        self.btn_fields.setObjectName("link")
         self.btn_fields.setText(tr("Pola działek EGiB ▸"))
         self.btn_fields.setCheckable(True)
-        self.btn_fields.setAutoRaise(True)
         lay.addWidget(self.btn_fields)
         self.list_attrs = QListWidget()
         self.list_attrs.setMaximumHeight(170)
@@ -652,25 +699,28 @@ class OutputPicker(QWidget):
 class TaskRow(QFrame):
     def __init__(self, title: str, task=None, parent=None):
         super().__init__(parent)
+        self.setObjectName("taskRow")
         self.task = task
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 2, 0 , 2)
+        lay.setContentsMargins(2, 6, 2, 6)
+        lay.setSpacing(4)
         top = QHBoxLayout()
         self.title = QLabel(title)
+        self.title.setObjectName("taskTitle")
         self.title.setWordWrap(True)
         top.addWidget(self.title, 1)
         self.btn_cancel = QToolButton()
+        self.btn_cancel.setObjectName("link")
         self.btn_cancel.setText(tr("Anuluj"))
-        self.btn_cancel.setAutoRaise(True)
         self.btn_cancel.clicked.connect(self._cancel)
         top.addWidget(self.btn_cancel)
         lay.addLayout(top)
         self.bar = QProgressBar()
-        self.bar.setMaximumHeight(10)
+        self.bar.setObjectName("taskBar")
         self.bar.setTextVisible(False)
         self.bar.setRange(0, 100 if task is not None else 0)
         lay.addWidget(self.bar)
-        self.result = hint_label()
+        self.result = hint_label("taskResult")
         self.result.setVisible(False)
         lay.addWidget(self.result)
         self.running = True
@@ -696,6 +746,7 @@ class TaskRow(QFrame):
         self.bar.setVisible(False)
         self.btn_cancel.setVisible(False)
         self.result.setText(("✓ " if ok else "⚠ ") + text)
+        set_state(self.result, "ok" if ok else "warn")
         self.result.setVisible(True)
 
 
@@ -708,20 +759,18 @@ class TasksPanel(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         head = QHBoxLayout()
         lbl = QLabel(tr("Zadania"))
-        f = lbl.font()
-        f.setBold(True)
-        lbl.setFont(f)
+        lbl.setObjectName("stepTitle")
         head.addWidget(lbl)
         head.addStretch(1)
         btn_log = QToolButton()
+        btn_log.setObjectName("link")
         btn_log.setText(tr("Dziennik"))
-        btn_log.setAutoRaise(True)
         btn_log.setToolTip(tr("Szczegóły w dzienniku komunikatów, zakładka PD_GUGiK"))
         btn_log.clicked.connect(self.open_log.emit)
         head.addWidget(btn_log)
         btn_clear = QToolButton()
+        btn_clear.setObjectName("link")
         btn_clear.setText(tr("Wyczyść"))
-        btn_clear.setAutoRaise(True)
         btn_clear.clicked.connect(self.clear_finished)
         head.addWidget(btn_clear)
         lay.addLayout(head)

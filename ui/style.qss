@@ -1,0 +1,168 @@
+/*
+ * Wygląd panelu „Pobierz dane GUGiK” (Qt Style Sheets – składnia jak CSS).
+ *
+ * Kolory bazowe pochodzą z palety QGIS – palette(...) – dzięki czemu panel
+ * wygląda dobrze w jasnym i ciemnym motywie (Blend of Gray, Night Mapping).
+ * Stałe kolory tylko dla stanów: ostrzeżenie (bursztyn), sukces (zieleń).
+ *
+ * Selektory:
+ *   #nazwa           – objectName widżetu
+ *   [state="done"]   – właściwość dynamiczna (setProperty), np. stan kroku
+ */
+
+/* ------------------------------------------------------------ karty kroków */
+
+QFrame#stepCard {
+    background: palette(base);
+    border: 1px solid palette(midlight);
+    border-radius: 8px;
+}
+QFrame#stepCard[state="done"] {
+    border-color: palette(mid);
+}
+
+QLabel#stepBadge {
+    min-width: 22px; max-width: 22px;
+    min-height: 22px; max-height: 22px;
+    border-radius: 11px;
+    background: palette(midlight);
+    color: palette(window-text);
+    font-weight: 600;
+    qproperty-alignment: AlignCenter;
+}
+QLabel#stepBadge[state="done"] {
+    background: palette(highlight);
+    color: palette(highlighted-text);
+}
+QLabel#stepBadge[state="todo"] {
+    background: rgba(230, 140, 0, 0.85);
+    color: white;
+}
+
+QLabel#stepTitle {
+    font-weight: 600;
+    font-size: 11pt;
+}
+QLabel#stepSummary {
+    color: palette(mid);
+}
+
+/* ------------------------------------------------------------ pola i listy */
+
+QLineEdit, QPlainTextEdit {
+    border: 1px solid palette(mid);
+    border-radius: 4px;
+    padding: 3px 6px;
+    background: palette(base);
+}
+QLineEdit:focus, QPlainTextEdit:focus {
+    border: 1px solid palette(highlight);
+}
+
+QTreeWidget#sourceTree, QListWidget {
+    border: 1px solid palette(midlight);
+    border-radius: 4px;
+    background: palette(base);
+}
+QTreeWidget#sourceTree::item {
+    padding: 2px 0px;
+}
+
+/* ------------------------------------------------------------ zakładki zakresu */
+
+QTabWidget#scopeTabs::pane {
+    border: none;
+    border-top: 1px solid palette(midlight);
+    top: -1px;
+}
+QTabWidget#scopeTabs QTabBar::tab {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 5px 8px;
+    margin-right: 2px;
+    color: palette(window-text);
+}
+QTabWidget#scopeTabs QTabBar::tab:selected {
+    border-bottom: 2px solid palette(highlight);
+    font-weight: 600;
+}
+QTabWidget#scopeTabs QTabBar::tab:hover:!selected {
+    border-bottom: 2px solid palette(midlight);
+}
+
+/* ------------------------------------------------------------ podpowiedzi */
+
+QLabel#hint {
+    color: palette(mid);
+}
+QLabel#status {
+    border-radius: 6px;
+    padding: 6px 8px;
+    background: palette(alternate-base);
+    color: palette(window-text);
+}
+QLabel#status[state="problem"] {
+    background: rgba(230, 140, 0, 0.15);
+    color: palette(window-text);
+    border-left: 3px solid rgba(230, 140, 0, 0.9);
+}
+QLabel#status[state="ready"] {
+    border-left: 3px solid palette(highlight);
+}
+
+/* ------------------------------------------------------------ przycisk główny */
+
+QPushButton#primary {
+    background: palette(highlight);
+    color: palette(highlighted-text);
+    border: none;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-weight: 600;
+    font-size: 11pt;
+}
+QPushButton#primary:hover {
+    border: 2px solid palette(dark);
+}
+QPushButton#primary:pressed {
+    padding-top: 9px;
+}
+QPushButton#primary:disabled {
+    background: palette(midlight);
+    color: palette(mid);
+}
+
+/* ------------------------------------------------------------ zadania */
+
+QFrame#taskRow {
+    border: none;
+    border-bottom: 1px solid palette(midlight);
+}
+QLabel#taskTitle {
+    font-weight: 600;
+}
+QLabel#taskResult[state="ok"] {
+    color: #2e7d32;
+}
+QLabel#taskResult[state="warn"] {
+    color: #b85c00;
+}
+QProgressBar#taskBar {
+    border: none;
+    border-radius: 3px;
+    background: palette(midlight);
+    min-height: 6px; max-height: 6px;
+}
+QProgressBar#taskBar::chunk {
+    border-radius: 3px;
+    background: palette(highlight);
+}
+QToolButton#link {
+    border: none;
+    color: palette(link);
+    padding: 2px 4px;
+}
+QToolButton#link:hover {
+    text-decoration: underline;
+}

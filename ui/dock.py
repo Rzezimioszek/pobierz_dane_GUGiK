@@ -21,13 +21,25 @@ from qgis.PyQt.QtWidgets import (
 from . import tr
 from .admin_units import AdminUnits
 from .map_tools import RectangleMapTool, make_band, show_geometry
-from .widgets import OutputPicker, ScopePicker, SourcePicker, TasksPanel, hint_label, step_box
+from .widgets import (
+    OutputPicker, ScopePicker, SourcePicker, TasksPanel, hint_label, set_state, step_box,
+)
 from ..core import catalog, filters, layers, log, tasks
 from ..prg_client import PRGClient
 from ..qt_compat import GEOM_POLYGON
 from ..wfs_index_dialog import WfsIndexResultsDialog
 
 EPSG2180 = "EPSG:2180"
+STYLE_SHEET = os.path.join(os.path.dirname(os.path.abspath(__file__)), "style.qss")
+
+
+def load_style_sheet() -> str:
+    """Arkusz stylów panelu (ui/style.qss); pusty, gdy pliku brak."""
+    try:
+        with open(STYLE_SHEET, encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
 ID_BATCH = 10
 POINT_CLOUD_EXT = (".copc.laz", ".laz", ".las", ".copc")
 
@@ -72,10 +84,11 @@ class PD_GUGiKDock(QDockWidget):
         lay = QVBoxLayout(content)
         lay.setContentsMargins(6, 6, 6, 6)
 
-        box, bl = step_box(1, tr("Co pobrać"))
+        lay.setSpacing(8)
+        self.source_box, bl = step_box(1, tr("Co pobrać"))
         self.sources = SourcePicker()
         bl.addWidget(self.sources)
-        lay.addWidget(box)
+        lay.addWidget(self.source_box)
 
         self.scope_box, bl = step_box(2, tr("Skąd"))
         self.scope = ScopePicker(self.units)
@@ -94,13 +107,11 @@ class PD_GUGiKDock(QDockWidget):
         self.eziudp.setVisible(False)
         lay.addWidget(self.eziudp)
 
-        self.hint = hint_label()
+        self.hint = hint_label("status")
         lay.addWidget(self.hint)
         self.btn_download = QPushButton(tr("Pobierz"))
-        self.btn_download.setMinimumHeight(32)
-        f = self.btn_download.font()
-        f.setBold(True)
-        self.btn_download.setFont(f)
+        self.btn_download.setObjectName("primary")
+        self.btn_download.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_download.clicked.connect(self.start)
         lay.addWidget(self.btn_download)
 
@@ -119,6 +130,7 @@ class PD_GUGiKDock(QDockWidget):
             combo.setMinimumWidth(80)
         scroll.setWidget(content)
         self.setWidget(scroll)
+        self.setStyleSheet(load_style_sheet())
         self.setMinimumWidth(300)
 
         self.sources.changed.connect(self._validate)
@@ -153,23 +165,48 @@ class PD_GUGiKDock(QDockWidget):
         self.eziudp.setVisible(sel.eziudp)
         for w in (self.scope_box, self.output_box, self.btn_download, self.hint):
             w.setVisible(not sel.eziudp)
+        n = len(sel.sources)
+        count = (tr("EZiUDP") if sel.eziudp else tr("skorowidz") if sel.skorowidz is not None
+                 else f"{n} " + (tr("warstwa") if n == 1 else tr("warstwy") if 2 <= n <= 4 else tr("warstw")))
+        self.source_box.set_state("todo" if sel.empty else "done", "" if sel.empty else count)
         if sel.eziudp:
             return False
 
-        problem = self._problem(sel, self.scope.scope())
-        self._package_context(sel, self.scope.scope())
+        scope = self.scope.scope()
+        step, problem = self._problem(sel, scope)
+        self._package_context(sel, scope)
+        self.scope_box.set_state("idle" if step == 1 else "todo" if step == 2 else "done",
+                                 "" if step in (1, 2) else scope.describe())
+        out_problem = self._output_problem()
+        self.output_box.set_state("todo" if out_problem else "done",
+                                  "" if out_problem else self._output_summary())
+        problem = problem or out_problem
         self.btn_download.setEnabled(not problem)
-        self.hint.setText(problem or f"{sel.names()} · {self.scope.scope().describe()}")
-        self.hint.setStyleSheet("color: #b35900;" if problem else "color: palette(mid);")
+        self.hint.setText(problem or tr("Gotowe: ") + f"{sel.names()} · {scope.describe()}")
+        set_state(self.hint, "problem" if problem else "ready")
         return not problem
 
-    def _problem(self, sel, scope) -> str:
+    def _output_problem(self) -> str:
+        if self.output.rb_gpkg.isChecked() and not self.output.gpkg_path():
+            return tr("Wskaż plik GeoPackage w kroku 3 albo wybierz warstwy tymczasowe.")
+        return ""
+
+    def _output_summary(self) -> str:
+        path = self.output.gpkg_path() if self.output.rb_gpkg.isChecked() else ""
+        return os.path.basename(path) if path else tr("tymczasowe")
+
+    def _problem(self, sel, scope) -> tuple:
+        """(numer kroku, komunikat) pierwszego braku albo (0, '')."""
         if sel.empty:
-            return tr("Zaznacz w kroku 1, co chcesz pobrać.")
+            return 1, tr("Zaznacz w kroku 1, co chcesz pobrać.")
+        msg = self._scope_problem(sel, scope)
+        return (2, msg) if msg else (0, "")
+
+    def _scope_problem(self, sel, scope) -> str:
         if scope.kind == "teryt" and not scope.teryt:
             return tr("Wybierz jednostkę albo wpisz kod TERYT.")
         if scope.kind == "rect" and scope.rect is None:
-            return tr("Narysuj prostokąt na mapie (przycisk „Rysuj…”).")
+            return tr("Narysuj prostokąt na mapie (przycisk „Rysuj na mapie…”).")
         if scope.kind == "layer":
             if scope.layer is None:
                 return tr("Wybierz warstwę poligonową.")

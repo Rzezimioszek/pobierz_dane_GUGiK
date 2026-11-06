@@ -29,7 +29,8 @@ except ImportError:
     from requests.packages.urllib3.util.retry import Retry
 
 LOG_TAG = "PD_GUGiK"
-EZIUDP_BASE_URL = "https://integracja.gugik.gov.pl/eziudp/index.php"
+EZIUDP_API_URL = "https://integracja.gugik.gov.pl/eziudp/api.php"
+EZIUDP_BASE_URL = "https://integracja.gugik.gov.pl/eziudp/index.php"   # strona HTML – zapas
 REQUEST_TIMEOUT = 20
 
 
@@ -41,6 +42,8 @@ ZBIOR_CONFIG: dict = {
     "bdsog": {
         "label": "Punkty osnowy (BDSOG)",
         "eziudp_zbior": "bdsog",
+        # Fragmenty nazwy zbioru w EZiUDP (gdy filtr „zbior” w API nic nie zwróci)
+        "name_patterns": ["osnów", "osnow", "bdsog"],
         # Wzorce porównywane po normalizacji: lowercase, bez ':', '_', '-'
         # Kolejność ważna – bardziej specyficzne wzorce wcześniej
         "layer_patterns": [
@@ -58,6 +61,8 @@ ZBIOR_CONFIG: dict = {
     "rcn": {
         "label": "Rejestr cen nieruchomości (RCN)",
         "eziudp_zbior": "rcn",
+        # Fragmenty nazwy zbioru w EZiUDP (gdy filtr „zbior” w API nic nie zwróci)
+        "name_patterns": ["cen nieruchomości", "cen nieruchomosci", "rcn"],
         # Schemat jak RCN zbiorczy: osobne warstwy działek, budynków i lokali
         "layer_patterns": [
             "dzialki", "budynki", "lokale", "transakcje",
@@ -68,6 +73,8 @@ ZBIOR_CONFIG: dict = {
     "egib": {
         "label": "ewidencja Gruntów i Budynków (EGIB)",
         "eziudp_zbior": "egib",
+        # Fragmenty nazwy zbioru w EZiUDP (gdy filtr „zbior” w API nic nie zwróci)
+        "name_patterns": ["gruntów i budynków", "gruntow i budynkow", "egib"],
         "layer_patterns": [
             "dzialki", "dzialka", "budynki", "punkty_graniczne"],
         "geom_field": "geom",
@@ -76,6 +83,8 @@ ZBIOR_CONFIG: dict = {
     "bdot500": {
         "label": "Budynki i obiekty towarzyszące (BDOT500)",
         "eziudp_zbior": "bdot500",
+        # Fragmenty nazwy zbioru w EZiUDP (gdy filtr „zbior” w API nic nie zwróci)
+        "name_patterns": ["bdot500", "szczegółowości zapewniającej", "obiektów topograficznych o szczeg"],
         "layer_patterns": [
             "budynki", "budynki_ot", "budynki_bt"],
         "geom_field": "geom",
@@ -138,6 +147,13 @@ class EziudpClient:
     # ------------------------------------------------------------------
 
     def get_wfs_urls(self, teryt: str, zbior: str) -> EziudpResult:
+        """
+        Adresy usług pobierania (WFS) zbioru dla powiatu.
+
+        1. API JSON EZiUDP: teryt + rodzaj=powiaty + zbior + usluga=pobierania
+        2. API bez filtra „zbior”, zbiór rozpoznany po fragmentach nazwy
+        3. Zapas: strona HTML index.php (dawny sposób)
+        """
         cfg = ZBIOR_CONFIG.get(zbior)
         if cfg is None:
             return EziudpResult(
@@ -147,39 +163,45 @@ class EziudpClient:
                     f"Dostępne: {list(ZBIOR_CONFIG.keys())}"
                 ),
             )
-
-        params = {
-            "teryt": teryt,
-            "zbior": cfg["eziudp_zbior"],
-            "usluga": "pobierania",
-        }
-        url = f"{EZIUDP_BASE_URL}?{urllib.parse.urlencode(params)}"
         result = EziudpResult(teryt=teryt, zbior=zbior)
+        tried = []
 
         try:
-            html = self._fetch(url)
-            if html is None:
-                result.success = False
-                result.error_message = f"Brak odpowiedzi z EZiUDP dla TERYT={teryt}"
-                return result
+            # 1. API z filtrem nazwy zbioru
+            api = self._api_records(teryt, cfg["eziudp_zbior"])
+            if api is not None:
+                tried.append("API")
+                records = [r for r in api if r.url_wfs]
+                # 2. API bez filtra – zbiór po fragmentach nazwy
+                if not records:
+                    every = self._api_records(teryt, None) or []
+                    pats = [p.lower() for p in cfg.get("name_patterns", [])]
+                    records = [r for r in every if r.url_wfs and
+                               any(p in r.nazwa_zbioru.lower() for p in pats)]
+                if records:
+                    result.records = records
+                    return result
 
-            records = [r for r in self._parse_html(html) if r.url_wfs]
-            result.records = records
-
-            if not records:
+            # 3. Strona HTML
+            html_url = f"{EZIUDP_BASE_URL}?" + urllib.parse.urlencode(
+                {"teryt": teryt, "zbior": cfg["eziudp_zbior"], "usluga": "pobierania"})
+            html = self._fetch(html_url)
+            if html is not None:
+                tried.append("strona HTML")
+                result.records = [r for r in self._parse_html(html) if r.url_wfs]
+                if result.records:
+                    return result
                 dump = self._dump_for_diagnosis(html, teryt, cfg["eziudp_zbior"])
-                result.success = False
-                result.error_message = (
-                    f"EZiUDP nie zwrócił usługi pobierania dla "
-                    f"TERYT={teryt}, zbior={cfg['eziudp_zbior']}"
-                    + (f" (odpowiedź zapisana w {dump})" if dump else "")
-                )
-                QgsMessageLog.logMessage(
-                    f"[EziudpClient] {url} → brak adresu WFS. Początek odpowiedzi: "
-                    f"{self._strip_tags(html)[:300]!r}",
-                    LOG_TAG, Qgis.MessageLevel.Warning,
-                )
+            else:
+                dump = ""
 
+            result.success = False
+            result.error_message = (
+                f"EZiUDP nie zwrócił usługi pobierania dla TERYT={teryt}, "
+                f"zbior={cfg['eziudp_zbior']}"
+                + (f" (sprawdzono: {', '.join(tried)})" if tried else " (brak odpowiedzi)")
+                + (f"; odpowiedź HTML w {dump}" if dump else "")
+            )
         except Exception as exc:
             result.success = False
             result.error_message = str(exc)
@@ -187,8 +209,88 @@ class EziudpClient:
                 f"[EziudpClient] Błąd dla TERYT={teryt}: {exc}",
                 LOG_TAG, Qgis.MessageLevel.Warning,
             )
-
         return result
+
+    # ------------------------------------------------------------------ API JSON
+
+    def _api_records(self, teryt: str, zbior_text: Optional[str]) -> Optional[list]:
+        """Rekordy z API EZiUDP albo None, gdy API nie odpowiedziało poprawnie."""
+        params = {"teryt": teryt, "rodzaj": "powiaty", "usluga": "pobierania", "format": "json"}
+        if zbior_text:
+            params["zbior"] = zbior_text
+        url = f"{EZIUDP_API_URL}?{urllib.parse.urlencode(params)}"
+        QgsMessageLog.logMessage(f"[EziudpClient] API: {url}", LOG_TAG, Qgis.MessageLevel.Info)
+        try:
+            resp = self._session.get(url, timeout=REQUEST_TIMEOUT)
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception as exc:
+            QgsMessageLog.logMessage(f"[EziudpClient] API niedostępne: {exc}",
+                                     LOG_TAG, Qgis.MessageLevel.Warning)
+            return None
+        records = self.parse_api(payload)
+        QgsMessageLog.logMessage(
+            f"[EziudpClient] API: {len(records)} zbiorów, "
+            f"{sum(1 for r in records if r.url_wfs)} z adresem WFS",
+            LOG_TAG, Qgis.MessageLevel.Info,
+        )
+        return records
+
+    @staticmethod
+    def parse_api(payload) -> list:
+        """
+        Odpowiedź API: [{"metadata": {...}, "data": [zbiór, …]}] (albo sam obiekt
+        z "data"). Z każdego zbioru: teryt, nazwa, organ i adres WFS z
+        uslugi.pobierania (wpisy mogą mieć prefiks typu „WFS=”).
+        """
+        blocks = payload if isinstance(payload, list) else [payload]
+        data = []
+        for block in blocks:
+            if isinstance(block, dict) and isinstance(block.get("data"), list):
+                data.extend(block["data"])
+            elif isinstance(block, dict) and "uslugi" in block:
+                data.append(block)
+
+        records = []
+        for rec in data:
+            if not isinstance(rec, dict):
+                continue
+            uslugi = rec.get("uslugi") or {}
+            r = EziudpRecord(
+                teryt=str(rec.get("teryt") or ""),
+                nazwa_zbioru=str(rec.get("zbior") or ""),
+                organ=str(rec.get("organ") or ""),
+                url_wfs=EziudpClient._pick_service(uslugi.get("pobierania") or [], "WFS"),
+                url_wms=EziudpClient._pick_service(uslugi.get("przegladania") or [], "WMS"),
+            )
+            records.append(r)
+        return records
+
+    @staticmethod
+    def _pick_service(entries: list, kind: str) -> str:
+        """
+        Adres usługi danego typu z listy wpisów „TYP=adres” albo samych adresów.
+        Najpierw wpisy z prefiksem TYP=, potem adresy zawierające nazwę typu,
+        na końcu pierwszy adres bez prefiksu innego typu (np. ATOM=).
+        """
+        typed, plain = [], []
+        for entry in entries:
+            entry = str(entry).strip()
+            prefix, sep, rest = entry.partition("=")
+            if sep and prefix.isalpha() and len(prefix) <= 6 and not prefix.lower().startswith("http"):
+                typed.append((prefix.upper(), rest.strip()))
+            else:
+                plain.append(entry)
+        for t, u in typed:
+            if t == kind:
+                return EziudpClient._clean_service_url(u)
+        for u in plain:
+            if kind.lower() in u.lower():
+                return EziudpClient._clean_service_url(u)
+        for u in plain:
+            if "atom" not in u.lower() and not u.lower().endswith(".xml"):
+                return EziudpClient._clean_service_url(u)
+        return ""
 
     def get_layer_names(self, wfs_url: str, zbior: str) -> list:
         """

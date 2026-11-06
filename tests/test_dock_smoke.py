@@ -202,3 +202,28 @@ def test_package_choice_for_powiat(dock):
     assert not dock.output.package_row.isHidden()
     dock.scope.teryt.set_teryt("14")
     assert dock.output.package_row.isHidden() and not dock.output.package_hint.isHidden()
+
+
+def test_style_sheet_applied_and_step_states(dock):
+    assert "QFrame#stepCard" in dock.styleSheet()
+    dock.sources.select_labels([])
+    assert dock.source_box.property("state") == "todo"
+    dock.sources.select_labels(["dzialki (EGIB)"])
+    dock.scope.tabs.setCurrentIndex(ScopeTab.IDS)
+    dock.scope.txt_ids.setPlainText("")
+    assert dock.source_box.property("state") == "done"
+    assert dock.scope_box.property("state") == "todo"
+    assert dock.hint.property("state") == "problem"
+    dock.scope.txt_ids.setPlainText("146501_1.0001.1")
+    assert dock.scope_box.property("state") == "done" and dock.hint.property("state") == "ready"
+
+
+def test_gpkg_without_path_blocks_download(dock):
+    dock.sources.select_labels(["dzialki (EGIB)"])
+    dock.scope.tabs.setCurrentIndex(ScopeTab.IDS)
+    dock.scope.txt_ids.setPlainText("146501_1.0001.1")
+    dock.output.fw_gpkg.setFilePath("")
+    dock.output.rb_gpkg.setChecked(True)
+    assert not dock.btn_download.isEnabled() and dock.output_box.property("state") == "todo"
+    dock.output.rb_memory.setChecked(True)
+    assert dock.btn_download.isEnabled()
