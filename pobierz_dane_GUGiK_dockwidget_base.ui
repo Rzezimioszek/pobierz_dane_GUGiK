@@ -1,0 +1,822 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>PD_GUGiKDockWidgetBase</class>
+ <widget class="QDockWidget" name="PD_GUGiKDockWidgetBase">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>726</width>
+    <height>558</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Pobierz dane GUGiK</string>
+  </property>
+  <widget class="QWidget" name="dockWidgetContents">
+   <layout class="QVBoxLayout" name="verticalLayout">
+    <item>
+     <layout class="QHBoxLayout" name="horizontalLayout_2">
+      <property name="topMargin">
+       <number>0</number>
+      </property>
+      <item>
+       <spacer name="horizontalSpacer_3">
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>40</width>
+          <height>20</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+      <item>
+       <widget class="QLabel" name="label_4">
+        <property name="font">
+         <font>
+          <pointsize>8</pointsize>
+         </font>
+        </property>
+        <property name="text">
+         <string>Typ danych</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QComboBox" name="cmbCategory"/>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="horizontalLayout_4">
+      <property name="topMargin">
+       <number>0</number>
+      </property>
+      <item>
+       <spacer name="horizontalSpacer_2">
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>40</width>
+          <height>20</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+      <item>
+       <widget class="QComboBox" name="cmbObjType">
+        <property name="font">
+         <font>
+          <pointsize>8</pointsize>
+          <weight>75</weight>
+          <bold>true</bold>
+         </font>
+        </property>
+        <item>
+         <property name="text">
+          <string>dzialki (EGIB)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>budynki (EGIB)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>dzialki (RCN)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>budynki (RCN)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>lokale (RCN)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>A07_Punkty_adresowe (PRG)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>A08_Ulice (PRG)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>O1_UrzedoweNazwyObiektowFizjograficznych (PRNG)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>O2_ZestandaryzowaneNazwyObiektowFizjograficznych (PRNG)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>O3_PozostaleNazwyObiektowFizjograficznych (PRNG)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>M1_UrzedoweNazwyMiejscowosci (PRNG)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>M2_PozostaleNazwyMiejscowosci (PRNG)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>A00_Granice_panstwa (PRG_A)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>A01_Granice_wojewodztw (PRG_A)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>A02_Granice_powiatow (PRG_A)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>A03_Granice_gmin (PRG_A)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>A04_Granice_miast (PRG_A)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>A05_Granice_jednostek_ewidencyjnych (PRG_A)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>A06_Granice_obrebow_ewidencyjnych (PRG_A)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>R01_Granice_rejonow_statystycznych (PRG_R)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>R02_Granice_obwodow_spisowych (PRG_R)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>S01_Sad_apelacyjny (PRG_S)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>S02_Sad_okregowy (PRG_S)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>S03_Sad_rejonowy (PRG_S)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>S04_Wojewodzki_sad_administracyjny (PRG_S)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>P01_Prokuratura_regionalna (PRG_P)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>P02_Prokuratura_okregowa (PRG_P)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>P03_Prokuratura_rejonowa (PRG_P)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>K01_Komenda_wojewodzka_policji (PRG_K)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>K02_Komenda_powiatowa_policji (PRG_K)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>K03_Komenda_stoleczna_policji (PRG_K)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>K04_Komenda_rejonowa_policji (PRG_K)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>K05_Komisariat_policji (PRG_K)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>K06_Komenda_wojewodzka_strazy_pozarnej (PRG_K)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>K07_Komenda_powiatowa_strazy_pozarnej (PRG_K)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>K08_Oddzial_strazy_granicznej (PRG_K)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>K09_Placowka_strazy_granicznej (PRG_K)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>K10_Dywizjon_strazy_granicznej (PRG_K)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>K11_Obszar_dzialania_szefa_obrony_cywilnej_wojewodztwa (PRG_K)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>K12_Obszar_dzialania_szefa_obrony_cywilnej_powiatu (PRG_K)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>K13_Obszar_dzialania_szefa_obrony_cywilnej_gminy (PRG_K)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>U01_Archiwum_panstwowe (PRG_U)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>U02_Urzad_skarbowy (PRG_U)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>U03_Wyspecjalizowany_urzad_skarbowy (PRG_U)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>U04_Urzad_celno-skarbowy (PRG_U)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>U05_Izba_administracji_skarbowej (PRG_U)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>U06_Nadlesnictwo (PRG_U)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>U07_Regionalna_dyrekcja_lasow_panstwowych (PRG_U)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>U08_Zarzad_zlewni_PGWWP (PRG_U)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>U09_Regionalny_zarzad_gospodarki_wodnej_PGWWP (PRG_U)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>U10_Urzad_morski (PRG_U)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>U11_Urzad_zeglugi_srodladowej (PRG_U)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>W01_Linia_podstawowa_morza_terytorialnego (PRG_W)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>W02_Morze_terytorialne_RP (PRG_W)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>W03_Morskie_wody_wewnetrzne (PRG_W)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>W04_Wylaczna_strefa_ekonomiczna (PRG_W)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>W05_Strefa_przylegla (PRG_W)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>W06_Morskie_linie_brzegowe (PRG_W)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>W07_Pas_nadbrzezny (PRG_W)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>W08_Pas_ochronny (PRG_W)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>W09_Pas_techniczny (PRG_W)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>W10_Reda (PRG_W)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>W11_Port_morski (PRG_W)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>W12_Przystan_morska (PRG_W)</string>
+         </property>
+        </item>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="horizontalLayout_3">
+      <property name="topMargin">
+       <number>0</number>
+      </property>
+      <item>
+       <spacer name="horizontalSpacer">
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>40</width>
+          <height>20</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+      <item>
+       <widget class="QLabel" name="lbl_skorowidz_date">
+        <property name="text">
+         <string>Zakres dat:</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QComboBox" name="cmb_skorowidz_rok"/>
+      </item>
+      <item>
+       <widget class="QComboBox" name="cmb_skorowidz_rok_do"/>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <widget class="Line" name="line_2">
+      <property name="orientation">
+       <enum>Qt::Horizontal</enum>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QTabWidget" name="tabWidget">
+      <property name="currentIndex">
+       <number>0</number>
+      </property>
+      <widget class="QWidget" name="tab_admin">
+       <attribute name="title">
+        <string>Obszar Administracyjny</string>
+       </attribute>
+       <layout class="QVBoxLayout" name="verticalLayout_2">
+        <item>
+         <widget class="QLabel" name="label_woj">
+          <property name="text">
+           <string>Województwo:</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QComboBox" name="cmb_woj"/>
+        </item>
+        <item>
+         <widget class="QLabel" name="label_pow">
+          <property name="text">
+           <string>Powiat:</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QComboBox" name="cmb_pow">
+          <property name="enabled">
+           <bool>false</bool>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="label_gmina">
+          <property name="text">
+           <string>Gmina:</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QComboBox" name="cmb_gmina">
+          <property name="enabled">
+           <bool>false</bool>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="label_obreb">
+          <property name="text">
+           <string>Obręb:</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QComboBox" name="cmb_obreb">
+          <property name="enabled">
+           <bool>false</bool>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="label_teryt_manual">
+          <property name="text">
+           <string>Lub wpisz kod TERYT / nazwę:</string>
+          </property>
+          <property name="buddy">
+           <cstring>txt_teryt_manual</cstring>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLineEdit" name="txt_teryt_manual">
+          <property name="toolTip">
+           <string>Format: województwo.powiat (np. 022602) lub województwo.powiat.gmina (np. 022602_1609) lub z numerem obrębu (np. 022602_1.0003.59). Możesz używać znaku * jako wieloznacznika lub szukać po nazwie.</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="lbl_teryt_info">
+          <property name="styleSheet">
+           <string>color: red;</string>
+          </property>
+          <property name="text">
+           <string/>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QCheckBox" name="chk_geometry_only">
+          <property name="text">
+           <string>Pobierz tylko geometrię (szybciej)</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="btn_download_admin">
+          <property name="font">
+           <font>
+            <weight>75</weight>
+            <bold>true</bold>
+           </font>
+          </property>
+          <property name="text">
+           <string>Pobierz</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <spacer name="verticalSpacer">
+          <property name="orientation">
+           <enum>Qt::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>20</width>
+            <height>40</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+       </layout>
+      </widget>
+      <widget class="QWidget" name="tab_id">
+       <attribute name="title">
+        <string>Identyfikator / Plik</string>
+       </attribute>
+       <layout class="QVBoxLayout" name="verticalLayout_3">
+        <item>
+         <widget class="QLabel" name="label_ids">
+          <property name="text">
+           <string>Wpisz ID działek (po jednym w linii):</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPlainTextEdit" name="txt_ids"/>
+        </item>
+        <item>
+         <widget class="QPushButton" name="btn_load_file">
+          <property name="text">
+           <string>Wczytaj z pliku TXT/CSV</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="btn_download_ids">
+          <property name="text">
+           <string>POBIERZ</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+      <widget class="QWidget" name="tab_map">
+       <attribute name="title">
+        <string>Mapa</string>
+       </attribute>
+       <layout class="QVBoxLayout" name="verticalLayout_4">
+        <item>
+         <layout class="QHBoxLayout" name="horizontalLayout">
+          <property name="topMargin">
+           <number>0</number>
+          </property>
+          <item>
+           <widget class="QPushButton" name="btn_select_rect">
+            <property name="text">
+             <string>Wskaż prostokąt na mapie</string>
+            </property>
+            <property name="checkable">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="btn_download_extent">
+            <property name="text">
+             <string>Pobierz z widoku (Extent)</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <widget class="Line" name="line">
+          <property name="orientation">
+           <enum>Qt::Horizontal</enum>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <spacer name="verticalSpacer_2">
+          <property name="orientation">
+           <enum>Qt::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>20</width>
+            <height>40</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+       </layout>
+      </widget>
+      <widget class="QWidget" name="tab_precise">
+       <property name="whatsThis">
+        <string>Obręb + nr działki</string>
+       </property>
+       <property name="accessibleName">
+        <string/>
+       </property>
+       <attribute name="title">
+        <string>Obręb + nr działki</string>
+       </attribute>
+       <layout class="QVBoxLayout" name="verticalLayout_5">
+        <item>
+         <layout class="QFormLayout" name="formLayout">
+          <item row="0" column="0">
+           <widget class="QLabel" name="lbl_obreb_name">
+            <property name="text">
+             <string>Nazwa obrębu:</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="txt_obreb_name">
+            <property name="placeholderText">
+             <string>np. Łasków</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QLineEdit" name="txt_dzialka_nr">
+            <property name="placeholderText">
+             <string>np. 123/1</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lbl_dzialka_nr">
+            <property name="text">
+             <string>Numer działki:</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <widget class="QPushButton" name="btn_search_obreb_nr">
+          <property name="text">
+           <string>Pobierz</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <spacer name="verticalSpacer_3">
+          <property name="orientation">
+           <enum>Qt::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>20</width>
+            <height>40</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+       </layout>
+      </widget>
+      <widget class="QWidget" name="tab_settings">
+       <attribute name="title">
+        <string>Ustawienia</string>
+       </attribute>
+       <layout class="QVBoxLayout" name="verticalLayout_settings">
+        <item>
+         <widget class="QLabel" name="label_attrs">
+          <property name="text">
+           <string>Atrybuty do pobrania (zostaw puste dla wszystkich):</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QListWidget" name="list_attributes">
+          <property name="selectionMode">
+           <enum>QAbstractItemView::MultiSelection</enum>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QCheckBox" name="chk_load_style">
+          <property name="text">
+           <string>Wczytuj domyślny styl</string>
+          </property>
+          <property name="checked">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <spacer name="verticalSpacer_settings">
+          <property name="orientation">
+           <enum>Qt::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>20</width>
+            <height>40</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+        <item>
+         <widget class="QLabel" name="label_3">
+          <property name="text">
+           <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;a href=&quot;https://integracja.gugik.gov.pl/&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#0000ff;&quot;&gt;Krajowa Integracja&lt;/span&gt;&lt;/a&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+          </property>
+          <property name="textFormat">
+           <enum>Qt::RichText</enum>
+          </property>
+          <property name="openExternalLinks">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="label_2">
+          <property name="text">
+           <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;a href=&quot;https://www.geoportal.gov.pl/&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#0000ff;&quot;&gt;Geoportal Krajowy&lt;/span&gt;&lt;/a&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+          </property>
+          <property name="openExternalLinks">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="label">
+          <property name="autoFillBackground">
+           <bool>false</bool>
+          </property>
+          <property name="text">
+           <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;a href=&quot;https://www.gov.pl/web/gugik&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#0000ff;&quot;&gt;GUGiK 2026&lt;/span&gt;&lt;/a&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+          </property>
+          <property name="openExternalLinks">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </widget>
+    </item>
+    <item>
+     <widget class="QProgressBar" name="progressBar">
+      <property name="visible">
+       <bool>false</bool>
+      </property>
+      <property name="value">
+       <number>0</number>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QPushButton" name="btn_cancel">
+      <property name="visible">
+       <bool>false</bool>
+      </property>
+      <property name="text">
+       <string>Przerwij</string>
+      </property>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
