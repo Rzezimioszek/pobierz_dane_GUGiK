@@ -119,3 +119,18 @@ def test_precise_search_goes_through_hits(dock):
     _wait(dock)
     _wait(dock)
     assert _layer("Dzialki") is not None, dock.messages
+
+
+def test_gpkg_output_from_settings_tab(dock, tmp_path):
+    from qgis.core import QgsCoordinateReferenceSystem, QgsRectangle
+    path = str(tmp_path / "wyniki.gpkg")
+    dock.rb_out_gpkg.setChecked(True)
+    dock.fw_out_gpkg.setFilePath(path)
+    dock.cmbObjType.setCurrentText("dzialki (EGIB)")
+    dock.canvas.setDestinationCrs(QgsCoordinateReferenceSystem("EPSG:2180"))
+    dock.canvas.setExtent(QgsRectangle(284000, 366000, 284500, 366500))
+    dock.run_extent_download()
+    _wait(dock)
+    vl = _layer("Dzialki")
+    assert vl.providerType() == "ogr" and vl.featureCount() == 25 and os.path.exists(path)
+    dock.rb_out_memory.setChecked(True)

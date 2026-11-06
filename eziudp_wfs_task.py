@@ -8,8 +8,10 @@ Architektura:
     z parametrami BBOX lub filtrem geometrii (subsetString OGC BBOX).
   - QgsVectorLayer jest tworzona z providerem "WFS" – QGIS sam pobiera
     dane przez paginację WFS 2.0 (fallback: 1.1).
-  - Po walidacji featuresy są kopiowane do warstwy memory – snapshot.
-  - Warstwa memory dostaje styl QML (tak samo jak BaseHarmonizer).
+  - Obiekty są czytane w wątku zadania do pamięci (snapshot), a warstwy
+    (tymczasowe albo w GPKG, przez core.layers) powstają w finished(),
+    w głównym wątku – projekt QGIS nie jest dotykany z wątku w tle.
+  - Warstwa dostaje styl QML z data/.
   - Brak harmonizacji schematu – pola zachowane tak jak ze źródła WFS.
 
 Filtrowanie zakresu:
@@ -19,22 +21,22 @@ Filtrowanie zakresu:
     z OGC BBOX do lokalnego przycinania po pobraniu jeśli serwer
     nie zastosował filtra
 """
-import os
-import re
 from dataclasses import dataclass, field
 from typing import Optional
 
 from qgis.core import (
     QgsTask, QgsMessageLog, Qgis,
-    QgsVectorLayer, QgsProject,
-    QgsCoordinateReferenceSystem, QgsCoordinateTransform,
-    QgsGeometry, QgsFeature, QgsRectangle,
+    QgsVectorLayer, QgsProject, QgsField, QgsFields,
+    QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsCoordinateTransformContext,
+    QgsGeometry, QgsRectangle,
     QgsWkbTypes,
 )
 from qgis.PyQt.QtCore import pyqtSignal
 
-from .eziudp_client import EziudpClient, ZBIOR_CONFIG
+from .eziudp_client import EziudpClient
 from .bdsog_harmonizer import get_harmonizer
+from .core import layers
+from .qt_compat import FIELD_STRING
 
 LOG_TAG = "PD_GUGiK"
 
@@ -221,141 +223,47 @@ def _try_wfs_layer(
 # Snapshot: kopiuj featuresy z WFS provider do warstwy memory
 # ---------------------------------------------------------------------------
 
-def _snapshot_to_memory(
+def _read_snapshot(
     wfs_layer: QgsVectorLayer,
-    mem_layer: QgsVectorLayer,
     clip_geom: Optional[QgsGeometry],
     teryt: str,
     wfs_url: str,
     task_check_cancelled,
-) -> int:
+) -> tuple:
     """
-    Iteruje przez featuresy z wfs_layer i zapisuje je do mem_layer.
-
-    Jeśli clip_geom podany – stosuje lokalne przycinanie (przydatne gdy
-    serwer nie zastosował filtra BBOX).
-
-    Zwraca liczbę dodanych obiektów.
+    Czyta obiekty z warstwy WFS (w wątku zadania) bez dotykania projektu.
+    Zwraca (pola QgsFields z polami meta, typ geometrii, [{'geom', 'attrs'}]).
+    Warstwy powstają później, w głównym wątku (EziudpWfsTask.finished).
     """
-    pr = mem_layer.dataProvider()
-    wfs_fields = wfs_layer.fields()
-    mem_fields = mem_layer.fields()
+    fields = QgsFields(wfs_layer.fields())
+    for meta in _META_FIELDS:
+        if fields.indexOf(meta) < 0:
+            fields.append(QgsField(meta, FIELD_STRING))
+    names = [f.name() for f in wfs_layer.fields()]
 
-    # Indeksy pól meta w mem_layer
-    idx_teryt = mem_fields.indexOf("teryt_powiatu")
-    idx_src = mem_fields.indexOf("zrodlo_wfs")
-
-    # Transformacja CRS jeśli wfs_layer ma inny CRS niż mem_layer
     src_crs = wfs_layer.crs()
-    tgt_crs = mem_layer.crs()
+    tgt_crs = QgsCoordinateReferenceSystem(_TARGET_CRS)
     transform = None
-    if src_crs.isValid() and tgt_crs.isValid() and src_crs != tgt_crs:
-        transform = QgsCoordinateTransform(src_crs, tgt_crs, QgsProject.instance())
+    if src_crs.isValid() and src_crs != tgt_crs:
+        transform = QgsCoordinateTransform(src_crs, tgt_crs, QgsCoordinateTransformContext())
 
-    added = 0
-    batch: list = []
-    BATCH_SIZE = 500
-
+    features = []
     for src_feat in wfs_layer.getFeatures():
         if task_check_cancelled():
             break
-
         geom = src_feat.geometry()
         if geom is None or geom.isEmpty():
             continue
-
-        # Transformacja geometrii
         if transform:
             geom.transform(transform)
-
-        # Lokalne przycinanie
         if clip_geom is not None and not geom.intersects(clip_geom):
             continue
+        attrs = {n: src_feat.attribute(n) for n in names}
+        attrs["teryt_powiatu"] = teryt
+        attrs["zrodlo_wfs"] = wfs_url
+        features.append({"geom": QgsGeometry(geom), "attrs": attrs})
 
-        dst_feat = QgsFeature(mem_fields)
-        dst_feat.setGeometry(geom)
-
-        # Kopiuj atrybuty po nazwie pola
-        for wfs_field in wfs_fields:
-            mem_idx = mem_fields.indexOf(wfs_field.name())
-            if mem_idx >= 0:
-                dst_feat.setAttribute(mem_idx, src_feat.attribute(wfs_field.name()))
-
-        # Pola meta
-        if idx_teryt >= 0:
-            dst_feat.setAttribute(idx_teryt, teryt)
-        if idx_src >= 0:
-            dst_feat.setAttribute(idx_src, wfs_url)
-
-        batch.append(dst_feat)
-
-        if len(batch) >= BATCH_SIZE:
-            pr.addFeatures(batch)
-            added += len(batch)
-            batch.clear()
-
-    if batch:
-        pr.addFeatures(batch)
-        added += len(batch)
-
-    if added > 0:
-        mem_layer.updateExtents()
-        mem_layer.triggerRepaint()
-
-    return added
-
-
-def _create_memory_layer(
-    wfs_layer: QgsVectorLayer,
-    layer_name: str,
-    plugin_dir: str,
-    load_style: bool,
-) -> QgsVectorLayer:
-    """
-    Tworzy lub zwraca istniejącą warstwę memory dla podanej nazwy.
-
-    Schemat pól = pola z WFS provider + pola meta (teryt_powiatu, zrodlo_wfs).
-    Jeśli warstwa o tej nazwie już istnieje w projekcie – zwraca ją
-    (featuresy będą dołączone do istniejącej).
-    """
-    existing = QgsProject.instance().mapLayersByName(layer_name)
-    if existing:
-        return existing[0]
-
-    # Typ geometrii z WFS provider
-    geom_type = QgsWkbTypes.displayString(wfs_layer.wkbType())
-    crs = _TARGET_CRS
-
-    mem_uri = f"{geom_type}?crs={crs}"
-    mem_layer = QgsVectorLayer(mem_uri, layer_name, "memory")
-    pr = mem_layer.dataProvider()
-
-    # Pola z WFS + meta
-    fields_to_add = list(wfs_layer.fields())
-    for meta in _META_FIELDS:
-        if wfs_layer.fields().indexOf(meta) < 0:
-            from qgis.core import QgsField
-            from .qt_compat import FIELD_STRING
-            fields_to_add.append(QgsField(meta, FIELD_STRING))
-
-    pr.addAttributes(fields_to_add)
-    mem_layer.updateFields()
-
-    # Styl QML – szukamy po base_name (np. "dzialki", "osnowa_pozioma")
-    if load_style and plugin_dir:
-        style_base = layer_name.lower()
-        # Usuń sufiks TERYT jeśli obecny (np. "Dzialki_0401" → "dzialki")
-        style_base = re.sub(r"_\d{4,7}$", "", style_base)
-        style_path = os.path.join(plugin_dir, "data", f"{style_base}.qml")
-        if os.path.exists(style_path):
-            mem_layer.loadNamedStyle(style_path)
-            QgsMessageLog.logMessage(
-                f"[EziudpWfsTask] Styl załadowany: {style_path}",
-                LOG_TAG, Qgis.MessageLevel.Info,
-            )
-
-    QgsProject.instance().addMapLayer(mem_layer)
-    return mem_layer
+    return fields, QgsWkbTypes.displayString(wfs_layer.wkbType()), features
 
 
 # ---------------------------------------------------------------------------
@@ -400,6 +308,11 @@ class EziudpWfsTask(QgsTask):
         self.clip_geom_wkt = clip_geom_wkt
         self.plugin_dir = plugin_dir
         self.load_style = load_style
+
+        # Miejsce zapisu i nazwy warstw w projekcie – odczytane tu, w głównym wątku
+        self.output = layers.Output.from_settings(load_style)
+        self._existing_names = {l.name() for l in QgsProject.instance().mapLayers().values()}
+        self._pending: list = []   # warstwy do utworzenia w finished()
 
         self._eziudp = EziudpClient()
         self._report = EziudpWfsReport(total_teryts=len(self.teryt_list))
@@ -448,6 +361,18 @@ class EziudpWfsTask(QgsTask):
         return True
 
     def finished(self, result: bool):
+        # Główny wątek: dopiero tu powstają warstwy w projekcie
+        for item in self._pending:
+            try:
+                layers.write(item["features"], item["name"], item["geom_type"],
+                             style=item["style"], load_style=self.output.load_style,
+                             fields=item["fields"], gpkg_path=self.output.gpkg_path)
+            except Exception as exc:
+                msg = f"Zapis warstwy {item['name']} nie powiódł się: {exc}"
+                QgsMessageLog.logMessage(f"[EziudpWfsTask] {msg}", LOG_TAG, Qgis.MessageLevel.Critical)
+                self._report.errors.append(msg)
+        self._pending = []
+
         status = "Zakończono" if result else (
             "Anulowano" if self.isCanceled() else "Błąd"
         )
@@ -561,11 +486,11 @@ class EziudpWfsTask(QgsTask):
             AVAILABLE_LAYERS_BY_KEY[key]["zbior"], wfs_layer_name
         )
         base_layer_name = harmonizer.LAYER_NAME if harmonizer else key
+        style_name = getattr(harmonizer, "STYLE", None) or base_layer_name
         mem_layer_name = f"{base_layer_name}_{teryt}"
 
-        # Sprawdź czy warstwa już istnieje (np. ponowne uruchomienie)
-        existing = QgsProject.instance().mapLayersByName(mem_layer_name)
-        if existing:
+        # Warstwa już jest w projekcie (np. ponowne uruchomienie) – pomijamy
+        if mem_layer_name in self._existing_names:
             QgsMessageLog.logMessage(
                 f"[EziudpWfsTask] Warstwa '{mem_layer_name}' już istnieje – pomijam.",
                 LOG_TAG, Qgis.MessageLevel.Info,
@@ -601,29 +526,16 @@ class EziudpWfsTask(QgsTask):
 
         report.wfs_version = version
 
-        # Utwórz lub pobierz warstwę memory (schemat pól z WFS provider)
-        mem_layer = _create_memory_layer(
+        # Snapshot: obiekty z WFS do pamięci (clip_geom, gdy wybrano gminę / zasięg / warstwę
+        # i serwer mógł nie zastosować BBOX z URI)
+        fields, geom_type, features = _read_snapshot(
             wfs_layer=wfs_vl,
-            layer_name=mem_layer_name,
-            plugin_dir=self.plugin_dir,
-            load_style=self.load_style,
-        )
-
-        if not mem_layer.isValid():
-            report.error = f"Nie udało się utworzyć warstwy memory: {mem_layer_name}"
-            return report
-
-        # Snapshot: kopiuj featuresy z WFS do memory
-        # clip_geom stosowany gdy: wybrano gminę / extend / warstwę
-        # i gdy BBOX w URI mógł nie być zrozumiany przez serwer
-        count = _snapshot_to_memory(
-            wfs_layer=wfs_vl,
-            mem_layer=mem_layer,
             clip_geom=self._clip_geom,
             teryt=teryt,
             wfs_url=wfs_url,
             task_check_cancelled=self.isCanceled,
         )
+        count = len(features)
 
         # Jawne usunięcie WFS layer – zwalniamy połączenie i pamięć
         del wfs_vl
@@ -637,14 +549,14 @@ class EziudpWfsTask(QgsTask):
             )
             wfs_vl2, version2 = _try_wfs_layer(base_url, wfs_layer_name, None)
             if wfs_vl2 is not None:
-                count = _snapshot_to_memory(
+                fields, geom_type, features = _read_snapshot(
                     wfs_layer=wfs_vl2,
-                    mem_layer=mem_layer,
                     clip_geom=self._clip_geom,
                     teryt=teryt,
                     wfs_url=wfs_url,
                     task_check_cancelled=self.isCanceled,
                 )
+                count = len(features)
                 del wfs_vl2
                 report.wfs_version = version2
 
@@ -653,6 +565,12 @@ class EziudpWfsTask(QgsTask):
             f"WFS {report.wfs_version}: {count} obiektów → '{mem_layer_name}'",
             LOG_TAG, Qgis.MessageLevel.Info,
         )
+
+        if features:
+            self._pending.append({"name": mem_layer_name, "fields": fields,
+                                  "geom_type": geom_type, "style": style_name,
+                                  "features": features})
+            self._existing_names.add(mem_layer_name)
 
         report.feature_count = count
         report.success = True

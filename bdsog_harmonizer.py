@@ -2,6 +2,10 @@
 """
 Harmonizator schematów dla danych pobieranych z powiatowych usług WFS.
 
+Stan obecny: okno EZiUDP używa stąd tylko nazwy warstwy (LAYER_NAME) i stylu
+(STYLE); pola zostają takie jak w usłudze źródłowej. Mapowanie na wspólny
+schemat (harmonize) jest gotowe, ale nie jest włączone. Zapis warstw: core.layers.
+
 Zmiany względem poprzedniej wersji:
   - BdsogHarmonizer zastąpiony dwoma wyspecjalizowanymi klasami:
       BdsogPoziomHarmonizer  → warstwa "Osnowa_pozioma"
@@ -11,11 +15,10 @@ Zmiany względem poprzedniej wersji:
     N-first (Y,X) na E,N (X,Y) przy tworzeniu QgsPointXY.
 """
 from typing import Optional
-import os 
 
 from qgis.core import (
     QgsFeature, QgsField, QgsFields, QgsGeometry,
-    QgsVectorLayer, QgsProject,
+    QgsProject,
     QgsCoordinateReferenceSystem, QgsCoordinateTransform,
     QgsMessageLog, Qgis,
 )
@@ -76,6 +79,7 @@ class BaseHarmonizer:
 
     Podklasy ustawiają:
         LAYER_NAME    – nazwa warstwy QGIS
+        STYLE         – nazwa stylu QML z data/ (domyślnie LAYER_NAME)
         GEOM_TYPE     – typ geometrii ("Point", "MultiLineString" itp.)
         TARGET_SCHEMA – lista (nazwa_pola, typ pola z qt_compat)
         FIELD_VARIANTS – {pole_docelowe: [możliwe_nazwy_źródłowe]}
@@ -83,6 +87,7 @@ class BaseHarmonizer:
     """
 
     LAYER_NAME: str = "Dane_WFS"
+    STYLE: Optional[str] = None
     GEOM_TYPE: str = "Point"
     TARGET_SCHEMA: list = []
     FIELD_VARIANTS: dict = {}
@@ -149,85 +154,6 @@ class BaseHarmonizer:
             harmonized.append(feat)
 
         return harmonized
-
-    def get_or_create_layer(
-        self,
-        layer_name: Optional[str] = None,
-        load_style: bool = True,
-        plugin_dir: str = "",
-        ) -> QgsVectorLayer:
-        """
-        Zwraca istniejącą warstwę o podanej nazwie lub tworzy nową.
- 
-        :param layer_name:  nazwa warstwy (domyślnie LAYER_NAME klasy)
-        :param load_style:  czy próbować załadować styl QML z katalogu data/
-        :param plugin_dir:  ścieżka do katalogu wtyczki (potrzebna do znalezienia QML)
-        """
-        name = layer_name or self.LAYER_NAME
-        existing = QgsProject.instance().mapLayersByName(name)
-        if existing:
-            return existing[0]
- 
-        vl = QgsVectorLayer(f"{self.GEOM_TYPE}?crs={TARGET_CRS}", name, "memory")
-        pr = vl.dataProvider()
-        pr.addAttributes(self.build_target_fields().toList())
-        vl.updateFields()
-
-        QgsMessageLog.logMessage(
-                    f"[Harmonizer] Layer name: {self.LAYER_NAME.lower()}",
-                    LOG_TAG, Qgis.MessageLevel.Info,
-                )
- 
-        # Załaduj styl QML jeśli dostępny – szukamy po bazowej nazwie klasy
-        # (np. "Osnowa_pozioma" dla BdsogPoziomHarmonizer, bez sufiksu _TERYT)
-        if load_style and plugin_dir:
-            # Użyj bazowej nazwy klasy, nie nazwy z TERYT-em na końcu
-            style_base = self.LAYER_NAME.lower()
-            
-            style_path = os.path.join(plugin_dir, "data", f"{style_base}.qml")
-            if os.path.exists(style_path):
-                vl.loadNamedStyle(style_path)
-                QgsMessageLog.logMessage(
-                    f"[Harmonizer] Załadowano styl: {style_path}",
-                    LOG_TAG, Qgis.MessageLevel.Info,
-                )
- 
-        QgsProject.instance().addMapLayer(vl)
-        return vl
-
-    def add_to_layer(
-        self,
-        features: list,
-        layer_name: Optional[str] = None,
-        load_style: bool = True,
-        plugin_dir: str = "",
-        ) -> int:
-        if not features:
-            return 0
-        vl = self.get_or_create_layer(layer_name, load_style, plugin_dir)
-        pr = vl.dataProvider()
-
-        existing_ids: set = set()
-        if self.UNIQUE_FIELD:
-            idx = vl.fields().indexOf(self.UNIQUE_FIELD)
-            if idx >= 0:
-                existing_ids = {f.attribute(self.UNIQUE_FIELD) for f in vl.getFeatures()}
-
-        to_add = []
-        for feat in features:
-            if self.UNIQUE_FIELD:
-                uid = feat.attribute(self.UNIQUE_FIELD)
-                if uid in existing_ids:
-                    continue
-                existing_ids.add(uid)
-            to_add.append(feat)
-
-        if to_add:
-            pr.addFeatures(to_add)
-            vl.updateExtents()
-            vl.triggerRepaint()
-
-        return len(to_add)
 
     def _detect_mapping(self, source_keys: list) -> dict:
         def normalize(s: str) -> str:
@@ -346,6 +272,7 @@ class BdsogWysokHarmonizer(BaseHarmonizer):
 # ---------------------------------------------------------------------------
 class EgibPktHarmonizer(BaseHarmonizer):
     LAYER_NAME = "Punkty graniczne"
+    STYLE = "punkty_graniczne"
     GEOM_TYPE = "Point"
     UNIQUE_FIELD = "NUMER_PUNKTU"
 
@@ -414,6 +341,7 @@ class EgibDziHarmonizer(BaseHarmonizer):
 
 class RCNHarmonizer(BaseHarmonizer):
     LAYER_NAME = "Transakcje"
+    STYLE = "transakcje"
     GEOM_TYPE = "Point"
     UNIQUE_FIELD = "lokalny_id"
 
@@ -456,6 +384,7 @@ class RCN2026Harmonizer(BaseHarmonizer):
 
 class BDOT500BudHarmonizer(BaseHarmonizer):
     LAYER_NAME = "Budynki i obiekty towarzyszące"
+    STYLE = "budynki_bdot500"
     GEOM_TYPE = "Polygon"
     UNIQUE_FIELD = "ID_IIP"
 

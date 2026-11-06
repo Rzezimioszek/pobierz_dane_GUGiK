@@ -6,7 +6,7 @@ Dodanie warstwy = dopisanie wpisu tutaj; interfejs i potok pobierania
 biorą wszystko z katalogu. Usługi skorowidzów (ortofotomapy, NMT, LIDAR)
 są opisane w `skorowidz_services.py`.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 EGIB_URL = "https://mapy.geoportal.gov.pl/wss/service/PZGIK/EGIB/WFS/UslugaZbiorcza"
@@ -42,6 +42,8 @@ class Source:
     split_lines_polygons: bool = False  # A08: osobne warstwy linii i poligonów
     opendata: Optional[str] = None  # "EGIB" / "RCN": paczki GeoParquet/GPKG
     attribute_selection: bool = False   # czy działa wybór pól z ustawień
+    # Pola liczbowe {nazwa: 'double'|'int'}; typ dostają tylko, gdy wszystkie wartości są liczbami
+    numeric_fields: Optional[dict] = field(default=None, hash=False, compare=False)
 
 
 def _egib(kind: str, id_field: str, layer: str, unique: str, style: str) -> Source:
@@ -51,11 +53,21 @@ def _egib(kind: str, id_field: str, layer: str, unique: str, style: str) -> Sour
                   attribute_selection=(kind == "dzialki"))
 
 
+# Ceny i powierzchnie w RCN (pola ze stylów data/*_rcn.qml); nie są używane w wyrażeniach stylów
+_RCN_NUMERIC = {
+    "tran_cena_brutto": "double", "nier_cena_brutto": "double", "nier_pow_gruntu": "double",
+    "dzi_cena_brutto": "double", "dzi_pow_ewid": "double",
+    "bud_cena_brutto": "double", "bud_pow_uzyt": "double",
+    "lok_cena_brutto": "double", "lok_pow_uzyt": "double", "lok_pow_przyn": "double",
+    "lok_liczba_izb": "int",
+}
+
+
 def _rcn(kind: str, id_field: str, layer: str, geom_type: str, style: str) -> Source:
     return Source(label=f"{kind} (RCN)", group="RCN", url=RCN_URL, typename=f"ms:{kind}",
                   id_field=id_field, teryt_field=id_field, layer_name=layer,
                   geom_type=geom_type, unique_field="tran_lokalny_id_iip", style=style,
-                  opendata="RCN")
+                  opendata="RCN", numeric_fields=_RCN_NUMERIC)
 
 
 def _prng(name: str) -> Source:

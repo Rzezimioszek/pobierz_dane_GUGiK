@@ -179,6 +179,7 @@ class PD_GUGiKDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
 
         # Initialize Settings and Attributes
         self.init_settings_ui()
+        self._init_output_settings()
         self.setup_completer()
 
     def _patch_init_eziudp_button(self):
@@ -810,6 +811,48 @@ class PD_GUGiKDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
     def _load_style(self):
         return self.chk_load_style.isChecked()
 
+    def _output(self):
+        return layers.Output.from_settings(self._load_style())
+
+    def _init_output_settings(self):
+        """Zakładka Ustawienia: wyniki do warstw tymczasowych albo do jednego pliku GPKG."""
+        from qgis.PyQt.QtWidgets import QGroupBox, QRadioButton, QVBoxLayout
+        from qgis.gui import QgsFileWidget
+        from qgis.core import QgsSettings
+
+        box = QGroupBox("Zapis wyników")
+        lay = QVBoxLayout(box)
+        self.rb_out_memory = QRadioButton("Warstwy tymczasowe (znikają po zamknięciu projektu)")
+        self.rb_out_gpkg = QRadioButton("Plik GeoPackage:")
+        self.fw_out_gpkg = QgsFileWidget()
+        self.fw_out_gpkg.setStorageMode(QgsFileWidget.StorageMode.SaveFile)
+        self.fw_out_gpkg.setFilter("GeoPackage (*.gpkg)")
+        self.fw_out_gpkg.setToolTip("Każda warstwa trafia do tego pliku; kolejne pobrania dopisują obiekty.")
+        for w in (self.rb_out_memory, self.rb_out_gpkg, self.fw_out_gpkg):
+            lay.addWidget(w)
+
+        s = QgsSettings()
+        prefix = layers.SETTINGS_PREFIX
+        gpkg_mode = s.value(f"{prefix}/output_mode", "memory", type=str) == "gpkg"
+        self.fw_out_gpkg.setFilePath(s.value(f"{prefix}/gpkg_path", "", type=str))
+        (self.rb_out_gpkg if gpkg_mode else self.rb_out_memory).setChecked(True)
+        self.fw_out_gpkg.setEnabled(gpkg_mode)
+
+        def save(*_):
+            path = self.fw_out_gpkg.filePath().strip()
+            if path and not path.lower().endswith(".gpkg"):
+                path += ".gpkg"
+            use_gpkg = self.rb_out_gpkg.isChecked() and bool(path)
+            s.setValue(f"{prefix}/output_mode", "gpkg" if use_gpkg else "memory")
+            s.setValue(f"{prefix}/gpkg_path", path)
+            self.fw_out_gpkg.setEnabled(self.rb_out_gpkg.isChecked())
+
+        self.rb_out_gpkg.toggled.connect(save)
+        self.fw_out_gpkg.fileChanged.connect(save)
+
+        layout = self.tab_settings.layout()
+        layout.insertWidget(layout.indexOf(self.chk_load_style) + 1, box)
+
     def _teryt_from_input(self):
         text = self.txt_teryt_manual.text().strip()
         return text.split(" ")[-1].replace(")", "") if "(" in text else text
@@ -859,7 +902,11 @@ class PD_GUGiKDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         self.reset_ui()
         n = len(result.features)
         if n:
-            layers.write_source(result.features, source, self._load_style())
+            try:
+                layers.write_source(result.features, source, self._output())
+            except Exception as exc:
+                self.show_error(f"Nie udało się zapisać wyników: {exc}")
+                return
         if result.canceled:
             self.show_info(f"Pobieranie przerwane. Zapisano {n} obiektów." if n
                            else "Pobieranie anulowane.")
