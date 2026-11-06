@@ -8,7 +8,7 @@ qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 supportsQt6=True
 description=Wtyczka do pobierania obiektów z usługi zbiorczej WFS EGIB. Plugin for downloading features from the EGiB collective WFS service.
-version=1.3.0
+version=1.4.0
 author=Główny Urząd Geodezji i Kartografii (GUGiK) - Łukasz Świątek
 email=uslugi.iip@gugik.gov.pl
 
@@ -27,6 +27,18 @@ repository=https://github.com/GlownyUrzadGeodezjiIKartografii/pobierz_dane_GUGiK
 hasProcessingProvider=no
 # Uncomment the following line and add your changelog:
 changelog=
+	1.4.0
+	Przebudowa rdzenia (bez zmian w wyglądzie panelu):
+		- jeden katalog źródeł, jeden parser GML i jedno zadanie pobierania dla wszystkich usług WFS
+		- pobieranie po ID, przez warstwę i plików ze skorowidzów działa w tle i da się je anulować
+		- uwzględniane są ustawienia proxy z QGIS
+	Poprawiono:
+		- zawieszanie QGIS przy błędzie sieci podczas pobierania przez warstwę
+		- pobieranie po ID zawsze zwracało działki EGiB, także przy wybranych budynkach
+		- wyszukiwanie po obrębie i numerze działki kończyło się błędem, gdy usługa nie podaje liczby obiektów
+		- pobieranie przez warstwę używało układu mapy zamiast układu warstwy
+		- warstwy PRG bez stałego identyfikatora zapisywały tylko jeden obiekt
+		- poligonowe warstwy morskie PRG (W02–W05, W10–W12) były zapisywane jako linie
 	1.3.0
 	Zgodność z QGIS 4 (Qt6/PyQt6) przy zachowaniu działania w QGIS 3 (Qt5)
 	1.2.13

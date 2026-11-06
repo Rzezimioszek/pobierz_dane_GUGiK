@@ -1,28 +1,22 @@
 # -*- coding: utf-8 -*-
 
 from qgis.PyQt import QtWidgets, uic
-from qgis.PyQt.QtCore import pyqtSignal, Qt, QSettings
+from qgis.PyQt.QtCore import pyqtSignal, Qt
 from qgis.PyQt.QtWidgets import QMessageBox, QCompleter, QListWidgetItem, QFileDialog
 from qgis.core import (
-    QgsProject, QgsVectorLayer, QgsFeature, QgsGeometry,
-    QgsField, QgsFields, QgsWkbTypes, QgsCoordinateTransform,
-    QgsCoordinateReferenceSystem, QgsRectangle, QgsApplication,
-    QgsMessageLog, Qgis, QgsRasterLayer, QgsPointCloudLayer
+    QgsProject, QgsGeometry, QgsCoordinateTransform,
+    QgsCoordinateReferenceSystem, QgsApplication, QgsMessageLog, Qgis,
+    QgsRasterLayer, QgsPointCloudLayer, QgsRectangle
 )
 from qgis.PyQt.QtGui import QColor
-from .qt_compat import FIELD_STRING, GEOM_POLYGON, GEOM_LINE, LAYER_VECTOR
+from .qt_compat import GEOM_POLYGON, LAYER_VECTOR
 from qgis.gui import QgsMapToolEmitPoint, QgsRubberBand, QgsMapLayerComboBox
 
 import os
 import json
-import requests
-import zipfile
 import re
-import tempfile
 
-from .base_wfs_client import EGIBClientBudynki, RCNClient, WFSClient, PRGClientAdresy, PRGClientAdmin, PRNGClient
-from .geoparquet_download_task import GeoparquetDownloadTask
-from .download_task import CheckHitsTask, DownloadTask
+from .core import catalog, filters, gml, layers, log, tasks
 from .prg_client import PRGClient
 
 from .wfs_index_dialog import WfsIndexResultsDialog
@@ -104,7 +98,7 @@ class PD_GUGiKDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         self.prg_client = PRGClient()
         self.load_data()
         self.connect_signals()
-        self.local_filter_geom = None
+        self.download_task = None
         self.running_tasks = []
 
         # Add checkbox for precise spatial filtering to admin tab
@@ -182,8 +176,6 @@ class PD_GUGiKDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         self.iface = iface
         self.canvas = self.iface.mapCanvas()
 
-        # Internal state
-        self.download_stopped = False
 
         # Initialize Settings and Attributes
         self.init_settings_ui()
@@ -804,960 +796,335 @@ class PD_GUGiKDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         )
         return None
 
+    # ------------------------------------------------------------------ wspólne
+
+    def _current_source(self):
+        """Źródło WFS z katalogu dla pozycji wybranej na liście (None dla skorowidzów/EZiUDP)."""
+        return catalog.source_for_label(self.cmbObjType.currentText())
+
+    def _selected_attributes(self):
+        attrs = [self.list_attributes.item(i).text() for i in range(self.list_attributes.count())
+                 if self.list_attributes.item(i).checkState() == Qt.CheckState.Checked]
+        return None if len(attrs) == self.list_attributes.count() else attrs
+
+    def _load_style(self):
+        return self.chk_load_style.isChecked()
+
+    def _teryt_from_input(self):
+        text = self.txt_teryt_manual.text().strip()
+        return text.split(" ")[-1].replace(")", "") if "(" in text else text
+
+    def _track(self, task):
+        """Trzyma referencję do zadania do jego końca (inaczej Python je usunie)."""
+        self.running_tasks.append(task)
+
+        def forget(*_):
+            if task in self.running_tasks:
+                self.running_tasks.remove(task)
+        task.taskCompleted.connect(forget)
+        task.taskTerminated.connect(forget)
+
+    def _begin_progress(self, task, lock_ui=True):
+        self.download_task = task
+        if lock_ui:
+            self.toggle_ui(False)
+        self.progressBar.setRange(0, 100)
+        self.progressBar.setValue(0)
+        self.progressBar.setVisible(True)
+        self.btn_cancel.setVisible(True)
+        task.progressChanged.connect(lambda p: self.progressBar.setValue(int(p)))
+
+    def _confirm_start(self):
+        reply = QMessageBox.question(
+            self, "Potwierdzenie",
+            "Rozpoczynamy pobieranie danych.\n\nPobieranie może zająć dużo czasu "
+            "w zależności od ilości danych.\n\nMożesz przerwać w dowolnym momencie.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        return reply == QMessageBox.StandardButton.Yes
+
+    def _start_wfs_task(self, source, queries, expected=0, confirm=True):
+        """Uruchamia pobieranie w tle; wynik trafia do _on_wfs_done."""
+        if not queries:
+            self.show_error("Brak zapytań do wykonania.")
+            return
+        if confirm and not self._confirm_start():
+            return
+        task = tasks.WfsDownloadTask(source, queries, self._selected_attributes(), expected)
+        self._track(task)
+        self._begin_progress(task)
+        task.done.connect(lambda result, s=source: self._on_wfs_done(s, result))
+        QgsApplication.taskManager().addTask(task)
+
+    def _on_wfs_done(self, source, result):
+        self.reset_ui()
+        n = len(result.features)
+        if n:
+            layers.write_source(result.features, source, self._load_style())
+        if result.canceled:
+            self.show_info(f"Pobieranie przerwane. Zapisano {n} obiektów." if n
+                           else "Pobieranie anulowane.")
+            return
+        if not n and result.errors:
+            self.show_error(f"Błąd pobierania: {result.errors[0][1]}")
+            return
+        if not n:
+            self.show_info("Brak obiektów w zadanym obszarze.")
+            return
+        msg = f"Pobrano {n} obiektów."
+        if result.errors:
+            msg += (f"\n\n{len(result.errors)} z zapytań nie powiodło się "
+                    f"(szczegóły w dzienniku, zakładka PD_GUGiK).")
+        self.show_info(msg)
+
+    # ------------------------------------------------------------------ PRG
+
     def run_prg_geometry_download(self):
         """Pobierz i wyświetl geometrię z PRG (bez pobierania działek)."""
-        manual_text = self.txt_teryt_manual.text().strip()
-        if not manual_text:
+        teryt = self._teryt_from_input()
+        if not teryt:
             self.show_error("Wpisz kod TERYT do wyszukania.")
             return
-
-        manual_text = manual_text.split(" ")[-1].replace(")", "") if "(" in manual_text else manual_text
-
-        QgsMessageLog.logMessage(
-            f"[UI] Pobieranie geometrii PRG dla TERYT: {manual_text}",
-            "PD_GUGiK", Qgis.MessageLevel.Info
-        )
-
-        try:
-            geom = self.prg_client.get_boundary_geometry(manual_text)
-        except Exception as e:
-            self.show_error(f"Błąd podczas pobierania geometrii z PRG: {e}")
-            return
-
+        log.info(f"[UI] Pobieranie geometrii PRG dla TERYT: {teryt}")
+        geom = self.prg_client.get_boundary_geometry(teryt)
         if geom is None or geom.isEmpty():
-            msg = f"Nie udało się pobrać geometrii dla TERYT: {manual_text}. Sprawdź poprawność kodu."
-            QgsMessageLog.logMessage(f"[UI] {msg}", "PD_GUGiK", Qgis.MessageLevel.Warning)
-            self.show_error(msg)
+            self.show_error(f"Nie udało się pobrać geometrii dla TERYT: {teryt}. "
+                            f"Sprawdź poprawność kodu.")
             return
-
-        # Create memory layer for the boundary
-        vl = QgsVectorLayer("Polygon?crs=epsg:2180", f"Granica PRG - {manual_text}", "memory")
-        pr = vl.dataProvider()
-        
-        # Add TERYT attribute
-        pr.addAttributes([QgsField("TERYT", FIELD_STRING)])
-        vl.updateFields()
-
-        feat = QgsFeature()
-        feat.setGeometry(geom)
-        feat.setAttributes([manual_text])
-        
-        pr.addFeatures([feat])
-        vl.updateExtents()
-        
-
-        if self.chk_load_style.isChecked():
-            style_path = os.path.join(os.path.dirname(__file__), 'data', f'prg.qml')
-            if os.path.exists(style_path):
-                vl.loadNamedStyle(style_path)
-
-        QgsProject.instance().addMapLayer(vl)
-        
-        # Zoom to extent
+        vl = layers.boundary_layer(geom, teryt, self._load_style())
         if self.canvas:
             self.canvas.setExtent(vl.extent())
             self.canvas.refresh()
 
-        QgsMessageLog.logMessage(f"[UI] Dodano warstwę z granicą PRG dla {manual_text}", "PD_GUGiK", Qgis.MessageLevel.Info)
-
+    # ------------------------------------------------------------------ po TERYT
 
     def run_admin_download(self):
-
-        obj_type = self.cmbObjType.currentText()
-
-        manual_text = self.txt_teryt_manual.text().strip()
-        if not manual_text:
+        teryt = self._teryt_from_input()
+        if not teryt:
             self.show_error("Wpisz kod TERYT do wyszukania.")
             return
-        manual_text = manual_text.split(" ")[-1].replace(")", "") if "(" in manual_text else manual_text
+        log.info(f"[UI] Pobieranie {self.cmbObjType.currentText()} dla TERYT: {teryt}")
 
-        QgsMessageLog.logMessage(
-            f"[UI] Pobieranie {obj_type} dla TERYT: {manual_text}",
-            "PD_GUGiK", Qgis.MessageLevel.Info
-        )
-
-        # ── Usługi skorowidzowe ──────────────────────────────────────────
-        # Dla skorowidzów: pobieramy geometrię PRG i od razu przekazujemy
-        # do _run_skorowidz. Nie budujemy klientów EGIB/RCN, nie pobieramy GeoParquet.
+        # Skorowidze: granica z PRG → wyszukiwanie w skorowidzu
         if self._current_skorowidz_service() is not None:
-            try:
-                geom = self.prg_client.get_boundary_geometry(manual_text)
-            except Exception as e:
-                self.show_error(f"Błąd podczas pobierania geometrii z PRG: {e}")
-                return
+            geom = self.prg_client.get_boundary_geometry(teryt)
             if geom is None or geom.isEmpty():
-                self.show_error(f"Nie udało się pobrać geometrii dla TERYT: {manual_text}.")
+                self.show_error(f"Nie udało się pobrać geometrii dla TERYT: {teryt}.")
                 return
             self._run_skorowidz(geom)
             return
 
-        # ── Dane wektorowe EGIB / RCN ────────────────────────────────────
-        if obj_type == "dzialki (EGIB)":
-            client = WFSClient()
-            attr_filter_value = "id_dzialki"
-        elif obj_type == "budynki (EGIB)":
-            client = EGIBClientBudynki()
-            attr_filter_value = "id_budynku"
-        elif "(RCN)" in obj_type:
-            obj_layer = obj_type.split(" ")[0]
-            client = RCNClient(obj_layer=obj_layer)
-            if obj_layer == "dzialki":
-                attr_filter_value = "dzi_id_dzialki"
-            elif obj_layer == "budynki":
-                attr_filter_value = "bud_id_budynku"
-            else:
-                attr_filter_value = "lok_id_lokalu"
-        elif "A07_Punkty_adresowe" in obj_type or "A08_Ulice" in obj_type or "(PRG)" in obj_type:
-            if "A07" in obj_type or "adresy" in obj_type.lower():
-                obj_layer = "A07_Punkty_adresowe"
-            elif "A08" in obj_type or "ulice" in obj_type.lower():
-                obj_layer = "A08_Ulice"
-            else:
-                obj_layer = obj_type.split(" ")[0]
-                
-            client = PRGClientAdresy(obj_layer=obj_layer)
-            attr_filter_value = "teryt"
-        elif "(PRG_" in obj_type:
-            obj_layer = obj_type.split(" ")[0]
-            client = PRGClientAdmin(obj_layer=obj_layer)
-            # attr_filter_value = "teryt"
-            attr_filter_value = "IIP_IDENTY"
-        elif "(PRNG)" in obj_type:
-            obj_layer = obj_type.split(" ")[0]
-            client = PRNGClient(obj_layer=obj_layer) # !!!
-            attr_filter_value = "IDIIP"
-        else:
+        source = self._current_source()
+        if source is None:
             return
-            client = WFSClient()
-            attr_filter_value = "id_dzialki"
 
-        if "(EGIB)" in obj_type or "(RCN)" in obj_type:
-            # Pobierz geometrię jednostki administracyjnej z PRG
-            if len(manual_text) < 4:
-                try:
-                    self.run_geoparquet_download(manual_text, obj_type)
-                except Exception as e:
-                    self.show_error(f"Błąd podczas pobierania {obj_type}: {e}")
+        # Kraj/województwo – tylko paczki; powiat – wybór metody
+        if source.opendata and len(teryt) < 4:
+            self.run_geoparquet_download(teryt, source)
+            return
+        if source.opendata and len(teryt) == 4:
+            box = QMessageBox(self.iface.mainWindow())
+            box.setWindowTitle("Wybór metody pobierania")
+            box.setText(f"Wybrano powiat (TERYT: {teryt}).\nKtórą metodą chcesz pobrać dane?")
+            parquet_btn = box.addButton("GeoPackage (zapis pliku na dysku)",
+                                        QMessageBox.ButtonRole.ActionRole)
+            box.addButton("WFS (warstwa tymczasowa)", QMessageBox.ButtonRole.ActionRole)
+            cancel_btn = box.addButton("Anuluj", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() == parquet_btn:
+                self.run_geoparquet_download(teryt, source)
+                return
+            if box.clickedButton() == cancel_btn:
                 return
 
-            # Powiaty (4 cyfry) → zapytaj o metodę pobierania
-            if len(manual_text) == 4:
-                msg_box = QMessageBox(self.iface.mainWindow())
-                msg_box.setWindowTitle("Wybór metody pobierania")
-                msg_box.setText(f"Wybrano powiat (TERYT: {manual_text}).\nKtórą metodą chcesz pobrać dane?")
-                parquet_btn = msg_box.addButton("GeoParquet (zapis pliku na dysku)", QMessageBox.ButtonRole.ActionRole)
-                wfs_btn = msg_box.addButton("WFS (warstwa tymczasowa)", QMessageBox.ButtonRole.ActionRole)
-                cancel_btn = msg_box.addButton("Anuluj", QMessageBox.ButtonRole.RejectRole)
-                msg_box.exec()
-                if msg_box.clickedButton() == parquet_btn:
-                    self.run_geoparquet_download(manual_text, obj_type)
-                    return
-                elif msg_box.clickedButton() == cancel_btn:
-                    return
-
-        try:
-            geom = self.prg_client.get_boundary_geometry(manual_text)
-        except Exception as e:
-            self.show_error(f"Błąd podczas pobierania geometrii z PRG: {e}")
-            return
-
+        geom = self.prg_client.get_boundary_geometry(teryt)
         if geom is None or geom.isEmpty():
-            msg = f"Nie udało się pobrać geometrii dla TERYT: {manual_text}. Sprawdź poprawność kodu."
-            QgsMessageLog.logMessage(f"[UI] {msg}", "PD_GUGiK", Qgis.MessageLevel.Warning)
-            self.show_error(msg)
+            self.show_error(f"Nie udało się pobrać geometrii dla TERYT: {teryt}. "
+                            f"Sprawdź poprawność kodu.")
             return
 
-        use_precise = hasattr(self, 'chk_precise_spatial') and self.chk_precise_spatial.isChecked()
-        filter_xml = client.build_spatial_filter(geom.asWkt(), use_bbox=not use_precise)
-        if not filter_xml:
-            self.show_error("Błąd budowania filtra przestrzennego.")
+        if source.clip_locally:
+            # PRG/PRNG: prostokąt w zapytaniu, dokładne przycięcie po pobraniu
+            query = tasks.Query(filters.spatial(source.geom_field, geom.asWkt(), use_bbox=True),
+                                clip_geom=geom, label=teryt)
+        else:
+            precise = hasattr(self, "chk_precise_spatial") and self.chk_precise_spatial.isChecked()
+            query = tasks.Query(filters.combine([
+                filters.spatial(source.geom_field, geom.asWkt(), use_bbox=not precise),
+                filters.attribute(source.teryt_field, teryt, like=True),
+            ]), label=teryt)
+        self._start_wfs_task(source, [query])
+
+    def run_geoparquet_download(self, teryt, source):
+        package = catalog.opendata_package(source, teryt)
+        if package is None:
+            self.show_error("Dla tego źródła nie ma paczek do pobrania.")
             return
-
-        filter_type = "dokładnym (polygon)" if use_precise else "przybliżonym (BBOX)"
-        QgsMessageLog.logMessage(
-            f"[UI] Pobieranie z filtrem {filter_type} dla TERYT: {manual_text}",
-            "PD_GUGiK", Qgis.MessageLevel.Info
-        )
-
-        local_filter_geom = False
-        if "(PRG" in obj_type or "(PRNG)" in obj_type:
-            attr_filter = client.build_attribute_filter(attr_filter_value, manual_text[:6], like=True)
-            filter_xml = client.build_spatial_filter(geom.asWkt(), use_bbox=True)
-            local_filter_geom = True
-            self.local_filter_geom = geom
-            combined_filter = filter_xml
-        else:
-            attr_filter = client.build_attribute_filter(attr_filter_value, manual_text, like=True)
-            combined_filter = client.combine_filters([filter_xml, attr_filter])
-
-        attributes = [self.list_attributes.item(i).text() for i in range(self.list_attributes.count())
-                      if self.list_attributes.item(i).checkState() == Qt.CheckState.Checked]
-        if len(attributes) == self.list_attributes.count():
-            attributes = None
-
-        
-        self.start_download_direct(combined_filter, attributes=attributes, local_filter_geom=local_filter_geom)
-
-
-    def run_geoparquet_download(self, teryt, obj_type):
-
-        ext = ""
-
-        baza = obj_type.split(" ")[-1]
-
-        if len(teryt) < 4:
-            file_type = "parquet"
-            obj_type_clean = "_" + obj_type.split(" ")[0]
-        else:
-            file_type = "gpkg"
-            ext = ".zip"
-            obj_type_clean = ""
-
-
-        if baza == "(EGIB)":
-            url = f"https://opendata.geoportal.gov.pl/InneDane/latest_exports/eziudp_wfs/{file_type.upper()}/{teryt}{obj_type_clean}.{file_type}{ext}"
-        elif baza == "(RCN)":
-            url = f"https://opendata.geoportal.gov.pl/InneDane/latest_exports/rcn_transakcje_ceny/{file_type.upper()}/{teryt}_transakcje_ceny{obj_type_clean}.{file_type}{ext}"
-
-        # 1. Wybór lokalizacji zapisu (musi być w wątku głównym)
-        default_name = f"{teryt}{obj_type_clean}.{file_type}{ext}"
+        url, name = package
+        ext = name.split(".", 1)[1]
         path, _ = QFileDialog.getSaveFileName(
-            self.iface.mainWindow(),
-            f"Wybierz miejsce zapisu pliku {file_type}",
-            default_name,
-            f"{file_type} Files (*.{file_type}{ext})"
-        )
-
+            self.iface.mainWindow(), "Wybierz miejsce zapisu pliku", name, f"*.{ext}")
         if not path:
             return
-
-        # 2. Tworzenie zadania (Task)
-        desc = f"Pobieranie {file_type}: {obj_type_clean} ({teryt})"
-        task = GeoparquetDownloadTask(desc, url, path, obj_type_clean)
-
-        # WAŻNE: Dodaj zadanie do listy, aby Python go nie usunął!
-        self.running_tasks.append(task)
-
-        # 3. Połączenie paska postępu z zadaniem
-        # Zadanie będzie automatycznie raportować postęp przez sygnał progressChanged
-        task.progressChanged.connect(lambda p: self.progressBar.setValue(int(p)))
-        
-        # Opcjonalnie: pokazanie/ukrycie paska
-        self.progressBar.setVisible(True)
-        task.begun.connect(lambda: self.progressBar.setVisible(True))
-        task.taskCompleted.connect(lambda: self.progressBar.setVisible(False))
-        task.taskTerminated.connect(lambda: self.progressBar.setVisible(False))
-        task.downloadFinished.connect(self.on_download_finished_gp)
-        task.taskCompleted.connect(lambda: self.running_tasks.remove(task))
-        task.taskTerminated.connect(lambda: self.running_tasks.remove(task))
-
-        # 4. Dodanie zadania do menedżera QGIS
+        task = tasks.FileDownloadTask(url, path, f"Pobieranie {name}")
+        self._track(task)
+        self._begin_progress(task, lock_ui=False)
+        task.done.connect(self.on_download_finished_gp)
         QgsApplication.taskManager().addTask(task)
-        
-        self.iface.messageBar().pushMessage("Zadanie uruchomione", "Pobieranie odbywa się w tle...", level=Qgis.MessageLevel.Info)
+        self.iface.messageBar().pushMessage("Zadanie uruchomione", "Pobieranie odbywa się w tle…",
+                                            level=Qgis.MessageLevel.Info)
+
+    def on_download_finished_gp(self, path):
+        self.reset_ui()
+        if not path:
+            return
+        try:
+            added = layers.add_package(path, self._load_style())
+        except Exception as exc:
+            self.show_error(f"Nie udało się wczytać pobranego pliku: {exc}")
+            return
+        if not added:
+            self.show_error(f"Nie udało się wczytać pliku: {path}")
+
+    # ------------------------------------------------------------------ po ID
 
     def run_id_download(self):
-        ids_text = self.txt_ids.toPlainText()
-        if not ids_text.strip():
+        ids = [line.strip() for line in self.txt_ids.toPlainText().splitlines() if line.strip()]
+        if not ids:
             self.show_error("Wpisz identyfikatory.")
             return
+        source = self._current_source() or catalog.egib_dzialki()
+        batch = 10
+        queries = [tasks.Query(filters.ids(source.id_field, ids[i:i + batch]),
+                               label=f"identyfikatory {i + 1}–{min(i + batch, len(ids))}")
+                   for i in range(0, len(ids), batch)]
+        log.info(f"[UI] Pobieranie {len(ids)} identyfikatorów w {len(queries)} paczkach")
+        self._start_wfs_task(source, queries, confirm=False)
 
-        all_ids = [line.strip() for line in ids_text.splitlines() if line.strip()]
-        client = WFSClient()
-        
-        attributes = [self.list_attributes.item(i).text() for i in range(self.list_attributes.count()) 
-                      if self.list_attributes.item(i).checkState() == Qt.CheckState.Checked]
-        if len(attributes) == self.list_attributes.count(): attributes = None
-
-        # Batching by 10
-        batch_size = 10
-        all_features = []
-        
-        from .download_task import DownloadTask
-        
-        QgsMessageLog.logMessage(f"[UI] Pobieranie {len(all_ids)} identyfikatorów w paczkach po {batch_size}", "PD_GUGiK", Qgis.MessageLevel.Info)
-        
-        # Create a single progress bar for the whole batch process
-        self.toggle_ui(False)
-        self.progressBar.setVisible(True)
-        self.progressBar.setRange(0, len(all_ids))
-        self.progressBar.setValue(0)
-        self.btn_cancel.setVisible(True)
-        self.download_stopped = False
-
-        # Create or clear layer first
-        vl = QgsProject.instance().mapLayersByName("Dzialki")
-        if not vl:
-            # We will create it on first batch success
-            pass
-
-        for i in range(0, len(all_ids), batch_size):
-            if self.download_stopped: break
-            
-            batch = all_ids[i:i + batch_size]
-            filter_xml = client.build_id_filter(batch)
-            
-            try:
-                gml = client.download(filter_xml, attributes=attributes)
-                temp_task = DownloadTask(filter_xml)
-                features = temp_task._parse_gml(gml)
-                
-                if features:
-                    all_features.extend(features)
-                    self.create_layer(features)
-                
-                self.progressBar.setValue(i + len(batch))
-                QgsApplication.processEvents()
-                
-            except Exception as e:
-                QgsMessageLog.logMessage(f"[UI] Błąd w paczce {i//batch_size + 1}: {e}", "PD_GUGiK", Qgis.MessageLevel.Warning)
-
-        self.reset_ui()
-        if all_features:
-            self.show_info(f"Pobrano łącznie {len(all_features)} działek.")
-        elif not self.download_stopped:
-            self.show_error("Nie pobrano żadnych działek.")
+    # ------------------------------------------------------------------ po zasięgu
 
     def run_extent_download(self):
-        extent = self.canvas.extent()
-        self.run_spatial_download(extent, "Widok mapy", log_extent=False)
+        self.run_spatial_download(self.canvas.extent(), "Widok mapy", log_extent=False)
 
     def run_spatial_download(self, rect, source_name, log_extent=True):
-        # rect is QgsRectangle in Canvas CRS
-        # Check CRS
         canvas_crs = self.canvas.mapSettings().destinationCrs()
         target_crs = QgsCoordinateReferenceSystem("EPSG:2180")
-
         if canvas_crs != target_crs:
-            xform = QgsCoordinateTransform(canvas_crs, target_crs, QgsProject.instance())
-            rect = xform.transformBoundingBox(rect)
-
-        # Log extent only if requested
+            rect = QgsCoordinateTransform(canvas_crs, target_crs,
+                                          QgsProject.instance()).transformBoundingBox(rect)
         if log_extent:
-            QgsMessageLog.logMessage(
-                f"[UI] Zakres {source_name}: Xmin={rect.xMinimum():.2f}, Ymin={rect.yMinimum():.2f}, Xmax={rect.xMaximum():.2f}, Ymax={rect.yMaximum():.2f}",
-                "PD_GUGiK", Qgis.MessageLevel.Info
-            )
-
+            log.info(f"[UI] Zakres {source_name}: {rect.toString(2)}")
         geom = QgsGeometry.fromRect(rect)
 
-        # Przechwycenie dla usług skorowidzowych (automatycznie obsługuje wszystkie z rejestru)
         if self._current_skorowidz_service() is not None:
             self._run_skorowidz(geom)
             return
+        source = self._current_source()
+        if source is None:
+            return
+        query = tasks.Query(filters.spatial(source.geom_field, geom.asWkt()), label=source_name)
+        self._start_wfs_task(source, [query])
 
-        #  Dynamiczny dobór klienta WFS zamiast sztywnego WFSClient()
-        obj_type = self.cmbObjType.currentText()
-        if "PRG" in obj_type or "A07_" in obj_type or "A08_" in obj_type:
-            clean_layer = obj_type.split(" ")[0]
-            client = PRGClientAdresy(obj_layer=clean_layer, obj_field="GEOMETRIA")
-        elif "budynki (EGIB)" in obj_type:
-            client = EGIBClientBudynki()
-        elif "(RCN)" in obj_type:
-            client = RCNClient(obj_layer=obj_type.split(" ")[0])
-        else:
-            client = WFSClient()    
-
-        filter_xml = client.build_spatial_filter(geom.asWkt())
-
-        # Bezpośrednio rozpoczynamy pobieranie - hits jest niewiarygodny dla przestrzeni
-        self.start_download_direct(filter_xml)
+    # ------------------------------------------------------------------ po warstwie
 
     def run_layer_download(self):
-        """Download parcels using polygon layer as filter"""
-        from qgis.PyQt.QtCore import pyqtSlot
-
-        # Get selected layer from combo box
-        if hasattr(self, 'cmb_layer'):
-            layer = self.cmb_layer.currentLayer()
-        else:
-            # Fallback: get first polygon layer
-            layers = QgsProject.instance().mapLayers().values()
-            layer = None
-            for l in layers:
-                if l.type() == LAYER_VECTOR and l.geometryType() == GEOM_POLYGON:
-                    layer = l
-                    break
-
+        """Pobieranie dla każdego obiektu wybranej warstwy poligonowej."""
+        layer = self.cmb_layer.currentLayer() if hasattr(self, "cmb_layer") else None
         if not layer:
             self.show_error("Nie znaleziono warstwy poligonowej.")
             return
-
-        # Manual filter check
-        if layer.geometryType() != GEOM_POLYGON:
+        if layer.type() != LAYER_VECTOR or layer.geometryType() != GEOM_POLYGON:
             self.show_error("Wybrana warstwa nie jest poligonowa.")
             return
 
-        # Ask for confirmation if many features
-        feature_count = layer.featureCount()
-        if feature_count > 100:
+        count = layer.featureCount()
+        if count > 100:
             reply = QMessageBox.question(
                 self, "Potwierdzenie",
-                f"Warstwa zawiera {feature_count} obiektów. Może to zająć dużo czasu. Czy kontynuować?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
+                f"Warstwa zawiera {count} obiektów. Może to zająć dużo czasu. Czy kontynuować?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             if reply == QMessageBox.StandardButton.No:
                 return
 
-        QgsMessageLog.logMessage(
-            f"[UI] Rozpoczynam pobieranie przez warstwę: {layer.name()} ({feature_count} obiektów)",
-            "PD_GUGiK", Qgis.MessageLevel.Info
-        )
-
-        # Iterate through features and download parcels
-        #  Dynamiczny dobór klienta WFS zamiast sztywnego WFSClient()
-        obj_type = self.cmbObjType.currentText()
-        if "PRG" in obj_type or "A07_" in obj_type or "A08_" in obj_type:
-            clean_layer = obj_type.split(" ")[0]
-            client = PRGClientAdresy(obj_layer=clean_layer, obj_field="GEOMETRIA")
-        elif "budynki (EGIB)" in obj_type:
-            client = EGIBClientBudynki()
-        elif "(RCN)" in obj_type:
-            client = RCNClient(obj_layer=obj_type.split(" ")[0])
-        else:
-            client = WFSClient()    
-        canvas_crs = self.canvas.mapSettings().destinationCrs()
-        target_crs = QgsCoordinateReferenceSystem("EPSG:2180")
-
-        # Create transform if needed
-        xform = None
-        if canvas_crs != target_crs:
-            xform = QgsCoordinateTransform(canvas_crs, target_crs, QgsProject.instance())
-
-        current = 0
-        skipped = 0
-        local_filter_geom = None
-
-        attributes = [self.list_attributes.item(i).text() for i in range(self.list_attributes.count())
-                if self.list_attributes.item(i).checkState() == Qt.CheckState.Checked]
-        if len(attributes) == self.list_attributes.count(): attributes = None
-
-        # Przechwycenie dla usług skorowidzowych – rozpuszczamy wszystkie geometrie warstwy w jedną
         if self._current_skorowidz_service() is not None:
-            dissolved_geom = None
+            dissolved = None
             for feat in layer.getFeatures():
                 g = feat.geometry()
-                dissolved_geom = g if dissolved_geom is None else dissolved_geom.combine(g)
-            if dissolved_geom:
-                self._run_skorowidz(dissolved_geom)
+                dissolved = g if dissolved is None else dissolved.combine(g)
+            if dissolved:
+                self._run_skorowidz(dissolved)
             return
 
+        source = self._current_source()
+        if source is None:
+            return
+
+        target_crs = QgsCoordinateReferenceSystem("EPSG:2180")
+        xform = None
+        if layer.crs() != target_crs:
+            xform = QgsCoordinateTransform(layer.crs(), target_crs, QgsProject.instance())
+
+        queries = []
         for feat in layer.getFeatures():
-            current += 1
             geom = feat.geometry()
-
-            QgsMessageLog.logMessage(
-                    f"[UI] Pobieranie {current}/{feature_count}",
-                    "PD_GUGiK", Qgis.MessageLevel.Warning
-                )
-
-            # Skip invalid geometries
             if geom is None or geom.isEmpty():
-                QgsMessageLog.logMessage(
-                    f"[UI] Pominięto geometrię {current}/{feature_count}: pusta/nieprawidłowa",
-                    "PD_GUGiK", Qgis.MessageLevel.Warning
-                )
-                skipped += 1
+                log.warning(f"[UI] Pominięto obiekt {feat.id()}: pusta geometria")
                 continue
-
-            # Transform to EPSG:2180 if needed
             if xform is not None:
                 geom.transform(xform)
-
-            n_coords = geom.constGet().nCoordinates()
-            # Smart filtering: check vertex count
-            if n_coords > 100:
-
-                convex_hull = geom.convexHull()
-                hull_coords = convex_hull.constGet().nCoordinates()
-
-                if hull_coords <= 100:
-                    # Otoczka wypukła mieści się w limitach - jest ciaśniejsza niż BBOX
-                    QgsMessageLog.logMessage(
-                        f"[UI] Geometria {current} posiada dużo wierzchołków ({n_coords}). "
-                        f"Używam otoczki wypukłej ({hull_coords} wierzchołków) w WFS + dokładny filtr lokalny.", 
-                        "PD_GUGiK", Qgis.MessageLevel.Info
-                    )
-                    # Używamy WKT otoczki wypukłej dla WFS
-                    filter_xml = client.build_spatial_filter(convex_hull.asWkt(), use_bbox=False)
-                    local_filter_geom = geom
-                else:
-                    # Nawet otoczka wypukła jest zbyt skomplikowana (rzadkie, ale możliwe)
-                    QgsMessageLog.logMessage(
-                        f"[UI] Geometria {current} i jej otoczka są zbyt skomplikowane "
-                        f"({n_coords} i {hull_coords} wierzchołków). Używam prostokąta BBOX + dokładny filtr lokalny.", 
-                        "PD_GUGiK", Qgis.MessageLevel.Info
-                    )
-                    filter_xml = client.build_spatial_filter(geom.asWkt(), use_bbox=True)
-                    local_filter_geom = geom
-
+            label = f"obiekt {feat.id()} warstwy {layer.name()}"
+            if geom.constGet().nCoordinates() <= 100:
+                queries.append(tasks.Query(
+                    filters.spatial(source.geom_field, geom.asWkt(), use_bbox=False), label=label))
+                continue
+            # Dużo wierzchołków: otoczka wypukła (albo BBOX) w zapytaniu + przycięcie lokalne
+            hull = geom.convexHull()
+            if hull.constGet().nCoordinates() <= 100:
+                flt = filters.spatial(source.geom_field, hull.asWkt(), use_bbox=False)
             else:
-                filter_xml = client.build_spatial_filter(geom.asWkt(), use_bbox=False)
-                local_filter_geom = None
+                flt = filters.spatial(source.geom_field, geom.asWkt(), use_bbox=True)
+            queries.append(tasks.Query(flt, clip_geom=geom, label=label))
 
+        log.info(f"[UI] Pobieranie przez warstwę {layer.name()}: {len(queries)} zapytań")
+        self._start_wfs_task(source, queries, confirm=False)
 
+    # ------------------------------------------------------------------ liczba obiektów
 
-            # Download...
-
-            self.local_filter_geom = local_filter_geom
-            
-            local_filter = True if self.local_filter_geom else False
-
-            
-
-            if feature_count < 2:
-                self.start_download(filter_xml, total=100000, attributes=attributes, local_filter_geom=True)
-                return
-
-            start_index = 0
-            count = 1000 # Page size
-            total_expected = 100000
-            features_data = [] # List of dicts: {'geom': wkt, 'attrs': {...}}
-            exception = None
-            stopped = False
-
-            temp_task = DownloadTask(filter_xml, total_expected=total_expected, attributes=attributes)
-            
-            while not stopped:
-                try:
-                    
-                    gml_content = client.download(filter_xml, start_index, count, attributes=attributes)
-                    
-                    new_features = temp_task._parse_gml(gml_content)
-                    features_data.extend(new_features)
-                    
-                    if len(new_features) < count:
-                        break
-                    
-                    start_index += count
-                    
-                except Exception as e:
-                    # self.exception = e
-                    # return False
-                    ...
-                    
-            try:
-
-                if local_filter_geom:
-                    filtered = []
-                    for f in features_data:
-                        f_geom = QgsGeometry.fromWkt(f['geom'])
-                        if f_geom.intersects(local_filter_geom):
-                            filtered.append(f)
-                    features_data = filtered
-            
-            except Exception as e:
-                    QgsMessageLog.logMessage(f"[UI] Błąd geometrii: {e}", "PD_GUGiK", Qgis.MessageLevel.Warning)
-            
-            self.create_layer(features_data)
-
-            QgsMessageLog.logMessage(
-                f"[UI] Pobieranie {current}/{feature_count} z filtrem localnym: {local_filter}",
-                "PD_GUGiK", Qgis.MessageLevel.Info
-            )
-        self.show_info(f"Pobrano obiekty.")
-
-
-
-            # continue
-
-    def start_check_hits(self, filter_xml):
+    def start_check_hits(self, source, filter_xml):
         self.toggle_ui(False)
         self.progressBar.setVisible(True)
-        self.progressBar.setRange(0, 0) # Indeterminate
+        self.progressBar.setRange(0, 0)
+        task = tasks.HitsTask(source, filter_xml)
+        self._track(task)
+        task.done.connect(lambda hits: self.on_hits_checked(hits, source, filter_xml, task))
+        QgsApplication.taskManager().addTask(task)
 
-        self.check_task = CheckHitsTask(filter_xml)
-        self.check_task.hitsReady.connect(lambda hits: self.on_hits_checked(hits, filter_xml))
-        QgsApplication.taskManager().addTask(self.check_task)
-
-    def start_download_direct(self, filter_xml, attributes=None, local_filter_geom=False):
-        """Bezpośrednio rozpoczynamy pobieranie bez sprawdzania hits."""
-        self.download_stopped = False
-        reply = QMessageBox.question(
-            self, "Potwierdzenie",
-            "Rozpoczynamy pobieranie danych.\n\nPobieranie może zająć dużo czasu w zależności od ilości danych.\n\nMożesz przerwać w dowolnym momencie.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        if reply == QMessageBox.StandardButton.No:
+    def on_hits_checked(self, hits, source, filter_xml, task):
+        self.reset_ui()
+        if hits == -2:
+            self.show_error(f"Błąd sprawdzania: {task.error}")
             return
-
-        self.start_download(filter_xml, 100000, attributes=attributes, local_filter_geom=local_filter_geom)
-
-    def on_hits_checked(self, hits, filter_xml):
-        if hits == -1:
-            err_msg = str(self.check_task.exception) if self.check_task.exception else "Nieznany błąd"
-            self.show_error(f"Błąd sprawdzania: {err_msg}")
-            self.reset_ui()
-            return
-
         if hits == 0:
             self.show_info("Brak wyników w zadanym obszarze.")
-            self.reset_ui()
             return
-
-        attributes = [self.list_attributes.item(i).text() for i in range(self.list_attributes.count()) 
-                      if self.list_attributes.item(i).checkState() == Qt.CheckState.Checked]
-        if len(attributes) == self.list_attributes.count(): attributes = None
-
-        limit = 5000
-        if hits > limit:
+        if hits > 5000:
             reply = QMessageBox.question(
                 self, "Potwierdzenie",
-                f"Zapytanie może zwróć około {hits} obiektów.\n\nCzy kontynuować?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
+                f"Zapytanie może zwrócić około {hits} obiektów.\n\nCzy kontynuować?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             if reply == QMessageBox.StandardButton.No:
-                self.reset_ui()
                 return
+        self._start_wfs_task(source, [tasks.Query(filter_xml)], expected=max(hits, 0),
+                             confirm=False)
 
-        self.start_download(filter_xml, hits, attributes=attributes)
-
-    def start_download(self, filter_xml, total, attributes=None, local_filter_geom=False):
-        self.progressBar.setRange(0, 100)
-        self.btn_cancel.setVisible(True)
-
-        self.download_task = DownloadTask(filter_xml, total_expected=total, attributes=attributes, data_type=self.cmbObjType.currentText())
-
-        
-        if local_filter_geom:
-            self.download_task.downloadFinished.connect(self.on_download_finished_not_load)
-
-        else:
-            
-            self.download_task.downloadFinished.connect(self.on_download_finished)
-        self.download_task.progressValue.connect(lambda val: self.progressBar.setValue(int(val)))
-        QgsApplication.taskManager().addTask(self.download_task)
-
-    def on_download_finished_gp(self, path):
-        # self.show_info("!!!")
-        # features_data is a list of dicts, or empty list on failure
-
-        if not path: # Jeśli ścieżka jest pusta (błąd/anulowanie), przerwij
-            self.reset_ui()
-            return
-
-        if path.lower().endswith(".zip"):
-            QgsMessageLog.logMessage(f"{path}", "PD_GUGiK", Qgis.MessageLevel.Critical)
-            try:
-                QgsMessageLog.logMessage("Rozpakowywanie archiwum...", "PD_GUGiK", Qgis.MessageLevel.Info)
-                
-                folder = os.path.dirname(path)
-                with zipfile.ZipFile(path, 'r') as zip_ref:
-                    # Pobieramy listę plików i szukamy pierwszego .parquet
-                    gpkg_files = [f for f in zip_ref.namelist() if f.lower().endswith('.gpkg')]
-                    
-                    if not gpkg_files:
-                        QgsMessageLog.logMessage("BŁĄD: Wewnątrz ZIP nie znaleziono pliku GPKG!", "PD_GUGiK", Qgis.MessageLevel.Critical)
-                        return
-
-                    # Rozpakuj wszystko do folderu, gdzie jest ZIP
-                    zip_ref.extractall(folder)
-                    
-                    # Ścieżka do wypakowanego pliku
-                    final_gpkg_path = os.path.join(folder, gpkg_files[0])
-                    QgsMessageLog.logMessage(f"Rozpakowano: {gpkg_files[0]}", "PD_GUGiK", Qgis.MessageLevel.Success)
-                    
-            except Exception as e:
-                QgsMessageLog.logMessage(f"Błąd podczas rozpakowywania: {str(e)}", "PD_GUGiK", Qgis.MessageLevel.Critical)
-                return
-            
-            os.remove(path)
-            path = final_gpkg_path
-
-        if path.lower().endswith(".gpkg"):
-            # Tworzymy tymczasową warstwę, żeby „przeskanować” zawartość pliku
-            temp_layer = QgsVectorLayer(path, "temp", "ogr")
-
-            if not temp_layer.isValid():
-                QgsMessageLog.logMessage(f"Nieprawidłowy plik GPKG: {path}", "PD_GUGiK", Qgis.MessageLevel.Critical)
-                return
-            
-            sublayers = temp_layer.dataProvider().subLayers()
-
-            if sublayers:
-                QgsMessageLog.logMessage(f"Znaleziono warstwy: {len(sublayers)}", "PD_GUGiK", Qgis.MessageLevel.Info)
-            
-            if len(sublayers) > 1:
-                QgsMessageLog.logMessage(f"Wykryto {len(sublayers)} warstw w GPKG. Wczytywanie wszystkich...", "PD_GUGiK", Qgis.MessageLevel.Info)
-                
-                for sub in sublayers:
-                    QgsMessageLog.logMessage(f"Analizuję warstwę: {sub}", "PD_GUGiK", Qgis.MessageLevel.Info)
-                    # 'sub' ma format "index:nazwa_warstwy:liczba_obiektów:typ_geometrii"
-                    parts = sub.split('!!::!!')
-                    layer_name = ""
-
-                    if len(parts) >= 2 and parts[1].strip():
-                        layer_name = parts[1] # Standard: "0:nazwa:..."
-                    else:
-                        # Fallback jeśli separator by się zmienił
-                        layer_name = sub.split(':')[0].replace('!!', '')
-
-                    if not layer_name:
-                        continue
-
-                    # Konstruujemy URI wskazujące na konkretną warstwę
-                    uri = f"{path}|layername={layer_name}"
-                    vlayer = QgsVectorLayer(uri, layer_name, "ogr")
-
-                    trg_layer = layer_name
-                    if "_" in trg_layer:
-                        trg_layer = trg_layer.split("_")[-1].split(".")[0]
-
-                    # if "transakcje" in layer_name: trg_layer += "_rcn"
-
-
-                    if self.chk_load_style.isChecked():
-                            style_path = os.path.join(os.path.dirname(__file__), 'data', f'{trg_layer.lower()}.qml')
-                            if os.path.exists(style_path):
-                                vlayer.loadNamedStyle(style_path)
-                    
-                    if vlayer.isValid():
-                        QgsProject.instance().addMapLayer(vlayer)
-                        QgsMessageLog.logMessage(f"Dodano warstwę: {layer_name}", "PD_GUGiK", Qgis.MessageLevel.Success)
-                    else:
-                        QgsMessageLog.logMessage(f"BŁĄD: Nie można wczytać warstwy {layer_name} z URI: {uri}", "PD_GUGiK", Qgis.MessageLevel.Critical)
-            else:
-                # Jeśli jest tylko jedna warstwa (lub subLayers zawiodło), wczytaj standardowo
-                self.add_single_layer(path)
-        else:
-            # Dla plików .parquet (które zazwyczaj mają jedną warstwę)
-            self.add_single_layer(path)
-
-    def add_single_layer(self, path):
-        """Pomocnicza funkcja do wczytywania pojedynczego pliku."""
-        layer_name = os.path.basename(path)
-        vlayer = QgsVectorLayer(path, layer_name, "ogr")
-
-        trg_layer = layer_name
-
-        if "_" in trg_layer:
-            trg_layer = trg_layer.split("_")[-1].split(".")[0]
-
-        if self.chk_load_style.isChecked():
-                style_path = os.path.join(os.path.dirname(__file__), 'data', f'{trg_layer.lower()}.qml')
-                if os.path.exists(style_path):
-                     vlayer.loadNamedStyle(style_path)
-
-        if vlayer.isValid():
-            QgsProject.instance().addMapLayer(vlayer)
-
-    def on_download_finished_not_load(self, features_data):
-        # self.show_info("!!!")
-        # features_data is a list of dicts, or empty list on failure
-        # if not features_data: # and self.download_task.exception:
-            # self.show_error(f"Błąd pobierania")#: {self.download_task.exception}")
-            # self.reset_ui()
-            # return
-
-        if not features_data:
-            self.show_info("Pobieranie anulowane lub brak danych.")
-            self.reset_ui()
-            return
-        
-        local_filter_geom = self.local_filter_geom
-
-        try:
-
-            if local_filter_geom:
-                filtered = []
-                for f in features_data:
-                    f_geom = QgsGeometry.fromWkt(f['geom'])
-                    if f_geom.intersects(local_filter_geom):
-                        filtered.append(f)
-                features_data = filtered
-        
-        except Exception as e:
-                QgsMessageLog.logMessage(f"[UI] Błąd geometrii: {e}", "PD_GUGiK", Qgis.MessageLevel.Warning)
-        
-        self.create_layer(features_data)
-        self.reset_ui()
-        self.show_info(f"Pobrano {len(features_data)} obiektów.")
-
-    def on_download_finished(self, features_data):
-        # features_data is a list of dicts, or empty list on failure
-        if not features_data and self.download_task.exception:
-             self.show_error(f"Błąd pobierania: {self.download_task.exception}")
-             self.reset_ui()
-             return
-
-        if not features_data:
-             self.show_info("Pobieranie anulowane lub brak danych.")
-             self.reset_ui()
-             return
-
-        self.create_layer(features_data)
-        self.reset_ui()
-        self.show_info(f"Pobrano {len(features_data)} obiektów.")
-
-    def _write_features_to_layer(self, features_data, trg_layer, geom_type,
-                             unique_field, style_name=None):
-        """Zapisuje obiekty do warstwy pamięciowej (tworzy ją, jeśli nie istnieje)."""
-        if not features_data:
-            return
-
-        existing_ids = set()
-        layers = QgsProject.instance().mapLayersByName(trg_layer)
-
-        if layers:
-            vl = layers[0]
-            pr = vl.dataProvider()
-            if unique_field not in ["simc"]:
-                idx = vl.fields().indexOf(unique_field)
-                if idx != -1:
-                    existing_ids = set(f.attribute(unique_field) for f in vl.getFeatures())
-        else:
-            vl = QgsVectorLayer(f"{geom_type}?crs=epsg:2180", trg_layer, "memory")
-            pr = vl.dataProvider()
-
-            sample_attrs = features_data[0]['attrs']
-            pr.addAttributes([QgsField(k, FIELD_STRING) for k in sample_attrs.keys()])
-            vl.updateFields()
-
-            if self.chk_load_style.isChecked():
-                name = (style_name or trg_layer.split("-")[-1]).lower()
-                style_path = os.path.join(os.path.dirname(__file__), 'data', f'{name}.qml')
-                if os.path.exists(style_path):
-                    vl.loadNamedStyle(style_path)
-
-            QgsProject.instance().addMapLayer(vl)
-
-        is_multi = QgsWkbTypes.isMultiType(vl.wkbType())
-
-        qgs_features = []
-        for fd in features_data:
-            feat_id = fd['attrs'].get(unique_field)
-            if unique_field not in ["simc"] and feat_id in existing_ids:
-                continue
-
-            g = QgsGeometry.fromWkt(fd['geom'])
-            if g.isNull() or g.isEmpty():
-                continue
-            # memory provider jest wrażliwy na single/multi – ujednolicamy
-            if is_multi and not g.isMultipart():
-                g.convertToMultiType()
-
-            feat = QgsFeature()
-            feat.setFields(vl.fields())
-            feat.setGeometry(g)
-            feat.setAttributes([fd['attrs'].get(f.name()) for f in vl.fields()])
-            qgs_features.append(feat)
-            existing_ids.add(feat_id)
-
-        if qgs_features:
-            pr.addFeatures(qgs_features)
-            vl.updateExtents()
-            vl.triggerRepaint()
-
-    def _split_by_geometry_type(self, features_data):
-        """Zwraca {'line': [...], 'polygon': [...]} na podstawie WKT."""
-        result = {'line': [], 'polygon': []}
-        for fd in features_data:
-            g = QgsGeometry.fromWkt(fd['geom'])
-            if g.isNull() or g.isEmpty():
-                continue
-            gtype = QgsWkbTypes.geometryType(g.wkbType())  # działa też dla krzywych
-            if gtype == GEOM_POLYGON:
-                result['polygon'].append(fd)
-            elif gtype == GEOM_LINE:
-                result['line'].append(fd)
-            else:
-                QgsMessageLog.logMessage(
-                    f"[UI] A08_Ulice: pominięto nieobsługiwany typ geometrii {g.wkbType()}",
-                    "PD_GUGiK", Qgis.MessageLevel.Warning)
-        return result
-
-    def create_layer(self, features_data):
-        if not features_data:
-            return
-
-        obj_text = self.cmbObjType.currentText()
-        
-        existing_ids = set()
-
-        trg_layer = "Dzialki"
-        unique_field = 'ID_DZIALKI'
-        geom_type = "Polygon"
-
-        if "A08_Ulice" in obj_text or "ulice (PRG)" in obj_text:
-            parts = self._split_by_geometry_type(features_data)
-            self._write_features_to_layer(
-                parts['line'], "A08_Ulice_linie", "MultiLineString",
-                unique_field='ID_IIP', style_name="a08_ulice")
-            self._write_features_to_layer(
-                parts['polygon'], "A08_Ulice_poligony", "MultiPolygon",
-                unique_field='ID_IIP', style_name="a08_ulice_poligony")
-            return
-
-
-        if self.cmbObjType.currentText() == "budynki (EGIB)":
-            unique_field = 'ID_BUDYNKU'
-            trg_layer = "Budynki"
-        elif self.cmbObjType.currentText() == "dzialki (RCN)":
-            unique_field = 'tran_lokalny_id_iip'
-            trg_layer = "Dzialki_RCN"
-        elif self.cmbObjType.currentText() == "budynki (RCN)":
-            unique_field = 'tran_lokalny_id_iip'
-            trg_layer = "Budynki_RCN"
-        elif self.cmbObjType.currentText() == "lokale (RCN)":
-            unique_field = 'tran_lokalny_id_iip'
-            trg_layer = "Lokale_RCN"
-            geom_type = "Point"
-        elif "A07_Punkty_adresowe" in self.cmbObjType.currentText() or "adresy (PRG)" in self.cmbObjType.currentText():
-            unique_field = 'ID_IIP'  # lub 'teryt' / 'sym_pna' w zależności od widoku GML
-            trg_layer = "A07_Punkty_adresowe"
-            geom_type = "Point"
-        elif "A08_Ulice" in self.cmbObjType.currentText() or "ulice (PRG)" in self.cmbObjType.currentText():
-            unique_field = 'ID_IIP'
-            trg_layer = "A08_Ulice"
-            geom_type = "MultiLineString"
-            # geom_type = "Polygon"
-
-        elif "(PRG_" in self.cmbObjType.currentText():
-            if "_A)" in self.cmbObjType.currentText():
-                unique_field = 'JPT_KOD_JE'
-            elif "_P)" in self.cmbObjType.currentText():
-                unique_field = 'JPT_JOR_ID'
-            elif "_R)" in self.cmbObjType.currentText():
-                if self.cmbObjType.currentText()[2] == "1":
-                    unique_field = 'REJ'
-                else:
-                    unique_field = 'OBWOD'
-            elif "_S)" in self.cmbObjType.currentText():
-                unique_field = 'JPT_ID'
-            elif "_U)" in self.cmbObjType.currentText():
-                # unique_field = 'JPT_ID'
-                unique_field = 'boundedBy'
-            elif "_W)" in self.cmbObjType.currentText():
-                # unique_field = 'JPT_ID'
-                unique_field = 'boundedBy'
-                if self.cmbObjType.currentText()[1:2] not in ["02", "03", "04", "05", "10", "11", "12"]:
-                    geom_type = "MultiLineString"
-            else:
-                unique_field = 'boundedBy'
-            tmp_l = self.cmbObjType.currentText().split(" ")[0]
-            tmp_k = self.cmbObjType.currentText()[0]
-            trg_layer = f"{tmp_l}-{tmp_k}_prg"
-        elif "(PRNG)" in self.cmbObjType.currentText():
-            unique_field = 'IDIIP'
-            tmp_l = self.cmbObjType.currentText().split(" ")[0]
-            trg_layer = f"{tmp_l}_PRNG"
-            geom_type = "Point"
-
-        QgsMessageLog.logMessage(f"unique_field: {unique_field}", "PD_GUGiK", Qgis.MessageLevel.Warning)
-        
-
-        # self.show_info(f"Current Objtype: {self.cmbObjType.currentText()}")
-
-        self._write_features_to_layer(features_data, trg_layer, geom_type, unique_field)        
-        
+    # ------------------------------------------------------------------ stan panelu
 
     def cancel_download(self):
-        self.download_stopped = True
-        if hasattr(self, 'download_task'):
-            self.download_task.cancel()
+        for task in list(self.running_tasks):
+            task.cancel()
 
     def reset_ui(self):
         self.toggle_ui(True)
+        self.progressBar.setRange(0, 100)
         self.progressBar.setVisible(False)
         self.btn_cancel.setVisible(False)
 
@@ -1822,11 +1189,10 @@ class PD_GUGiKDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             "PD_GUGiK", Qgis.MessageLevel.Info
         )
 
-        client = WFSClient()
-        filter_xml = client.build_id_filter([dzialka_id])
-
+        source = catalog.egib_dzialki()
+        filter_xml = filters.ids(source.id_field, [dzialka_id])
         if filter_xml:
-            self.start_check_hits(filter_xml)
+            self.start_check_hits(source, filter_xml)
 
     def select_obreb_from_duplicates(self, obreb_teryt_list):
         """Zapytaj użytkownika o wybór obrębu z listy duplikatów."""
@@ -1888,44 +1254,8 @@ class PD_GUGiKDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
     #
     # NEW LINES
     def parse_wfs_index_to_features(self, xml_content):
-        """
-        Uniwersalny parser GML dla usług skorowidzowych WFS (Orto, NMT).
-        Wykorzystuje mechanizmy QGIS do bezpiecznego odczytu geometrii i atrybutów.
-        """
-        features_data = []
-        # Zapisz zawartość GML do pliku tymczasowego
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.gml') as f:
-            f.write(xml_content.encode('utf-8'))
-            temp_path = f.name
-        
-        vl = None
-        try:
-            # Wczytaj jako ukrytą warstwę wektorową
-            vl = QgsVectorLayer(temp_path, "temp_wfs", "ogr")
-            if vl.isValid():
-                for feat in vl.getFeatures():
-                    # Zapisujemy geometrię i wszystkie dostępne atrybuty
-                    features_data.append({
-                        'geom': QgsGeometry(feat.geometry()),
-                        'attrs': {field.name(): feat[field.name()] for field in vl.fields()}
-                    })
-        except Exception as e:
-            QgsMessageLog.logMessage(f"[UI] Błąd parsowania WFS Skorowidzów: {e}", "PD_GUGiK", Qgis.MessageLevel.Warning)
-        finally:
-            # 1. ZWOLNIENIE BLOKADY PLIKU PRZEZ QGIS/OGR
-            if vl is not None:
-                del vl
-                vl = None
-            # 2. USUNIĘCIE PLIKU TYMCZASOWEGO
-            # Usuń plik tymczasowy
-            if os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except Exception as e:
-                    # Jeśli Windows nadal trzyma plik, po prostu to logujemy, nie blokując działania wtyczki
-                    QgsMessageLog.logMessage(f"[UI] Nie można usunąć pliku temp {temp_path}: {e}", "PD_GUGiK", Qgis.MessageLevel.Info)
-                    
-        return features_data
+        """Obiekty skorowidza (geometria QgsGeometry + atrybuty) – odczyt przez GDAL w pamięci."""
+        return gml.read_typed(xml_content)
 
     def search_and_show_wfs_index(self, geom, service_url, layer_name):
         """
@@ -2008,69 +1338,45 @@ class PD_GUGiKDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         return False
 
     def process_selected_rasters(self, urls, mode):
-        """Wczytuje zaznaczone pliki na mapę (strumieniowo lub przez pobranie)."""
+        """Wczytuje zaznaczone pliki na mapę: strumieniowo albo po pobraniu w tle."""
         if mode == "vsicurl":
             added = 0
             for name, url in urls:
-                file_name = url.split('/')[-1]
-                vsi_url = f"/vsicurl/{url}"
-                if self._load_file_as_layer(vsi_url, file_name):
+                if self._load_file_as_layer(f"/vsicurl/{url}", url.split('/')[-1]):
                     added += 1
             self.show_info(f"Dodano {added} z {len(urls)} warstw strumieniowych.")
+            return
+        if mode != "download":
+            return
+        folder = QFileDialog.getExistingDirectory(self, "Wybierz folder do zapisu pobranych plików")
+        if not folder:
+            return
+        self._raster_queue = [(url, os.path.join(folder, url.split('/')[-1])) for _, url in urls]
+        self._raster_total = len(self._raster_queue)
+        self._raster_saved = 0
+        self._next_raster()
 
-        elif mode == "download":
-            folder_path = QFileDialog.getExistingDirectory(self, "Wybierz folder do zapisu pobranych plików")
-            if not folder_path:
-                return
+    def _next_raster(self):
+        """Pobiera pliki skorowidza po jednym, w tle; po każdym wczytuje warstwę."""
+        if not self._raster_queue:
+            self.reset_ui()
+            self.show_info(f"Zakończono pobieranie: {self._raster_saved} z {self._raster_total} plików.")
+            return
+        url, path = self._raster_queue.pop(0)
+        done = self._raster_total - len(self._raster_queue)
+        task = tasks.FileDownloadTask(url, path, f"Pobieranie pliku {done} z {self._raster_total}")
+        self._track(task)
+        self._begin_progress(task)
+        task.done.connect(self._on_raster_downloaded)
+        QgsApplication.taskManager().addTask(task)
 
-            self.toggle_ui(False)
-            self.progressBar.setVisible(True)
-            total_files = len(urls)
-
-            for i, (name, url) in enumerate(urls):
-                file_name = url.split('/')[-1]
-                save_path = os.path.join(folder_path, file_name)
-
-                self.iface.mainWindow().statusBar().showMessage(
-                    f"Pobieranie pliku {i+1} z {total_files}: {file_name}"
-                )
-
-                try:
-                    with requests.get(url, stream=True, timeout=60) as r:
-                        r.raise_for_status()
-                        total_length = r.headers.get('content-length')
-
-                        if total_length is None:
-                            self.progressBar.setRange(0, 0)
-                            with open(save_path, 'wb') as f:
-                                for chunk in r.iter_content(chunk_size=8192):
-                                    f.write(chunk)
-                                    QgsApplication.processEvents()
-                        else:
-                            total_length = int(total_length)
-                            self.progressBar.setRange(0, 100)
-                            downloaded = 0
-                            with open(save_path, 'wb') as f:
-                                for chunk in r.iter_content(chunk_size=8192):
-                                    f.write(chunk)
-                                    downloaded += len(chunk)
-                                    self.progressBar.setValue(
-                                        int((downloaded / total_length) * 100)
-                                    )
-                                    QgsApplication.processEvents()
-
-                    self._load_file_as_layer(save_path, file_name)
-
-                except Exception as e:
-                    QgsMessageLog.logMessage(
-                        f"Błąd pobierania {file_name}: {e}",
-                        "PD_GUGiK", Qgis.MessageLevel.Critical,
-                    )
-
-            self.toggle_ui(True)
-            self.progressBar.setVisible(False)
-            self.iface.mainWindow().statusBar().clearMessage()
-            self.show_info(f"Zakończono pobieranie {total_files} plików na dysk.")
+    def _on_raster_downloaded(self, path):
+        if path:
+            self._raster_saved += 1
+            self._load_file_as_layer(path, os.path.basename(path))
+        elif self.download_task is not None and self.download_task.isCanceled():
+            self._raster_queue = []  # anulowanie zatrzymuje całą kolejkę
+        self._next_raster()
 
     def search_and_show_multiple_wfs_indices(self, geom, service_url, years,
                                               layer_prefix: str = "gugik:SkorowidzOrtofomapy",

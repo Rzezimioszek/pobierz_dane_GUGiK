@@ -49,7 +49,7 @@ _META_FIELDS = ["teryt_powiatu", "zrodlo_wfs"]
 
 
 # ---------------------------------------------------------------------------
-# Re-eksport AVAILABLE_LAYERS – ten moduł może zastąpić eziudp_download_task
+# Warstwy dostępne w oknie EZiUDP
 # ---------------------------------------------------------------------------
 
 AVAILABLE_LAYERS = [

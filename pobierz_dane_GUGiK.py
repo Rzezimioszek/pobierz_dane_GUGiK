@@ -24,11 +24,7 @@ Pobieranie danych GUGiK
 from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, Qt
 from qgis.PyQt.QtGui import QIcon
 from .qt_compat import QAction
-# Initialize Qt resources from file resources.py
-try:
-    from .resources import *  # noqa: F401,F403  (zasoby Qt5; ikona ładowana z pliku)
-except Exception:
-    pass
+
 
 # Import the code for the DockWidget
 from .pobierz_dane_GUGiK_dockwidget import PD_GUGiKDockWidget

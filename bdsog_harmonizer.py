@@ -7,7 +7,7 @@ Zmiany względem poprzedniej wersji:
       BdsogPoziomHarmonizer  → warstwa "Osnowa_pozioma"
       BdsogWysokHarmonizer   → warstwa "Osnowa_wysokosciowa"
   - Schemat oparty na rzeczywistych polach z geoportal2/BDSOG.
-  - SWAP_XY=False – parser GML w download_task.py już zamienia kolejność
+  - SWAP_XY=False – parser GML (core/gml.py) już ustawia kolejność osi
     N-first (Y,X) na E,N (X,Y) przy tworzeniu QgsPointXY.
 """
 from typing import Optional

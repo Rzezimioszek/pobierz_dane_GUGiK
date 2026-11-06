@@ -1,47 +1,20 @@
 # -*- coding: utf-8 -*-
-"""
-Klient WFS do pobierania skorowidzów GUGiK (Ortofotomapy, NMT itp.).
-Dziedziczy z BaseWFSClient – nie duplikuje logiki sesji ani budowania filtrów.
-"""
-import urllib.parse
-from qgis.core import QgsMessageLog, Qgis
+"""Klient WFS skorowidzów GUGiK (ortofotomapy, NMT, LIDAR): osobna warstwa na rocznik."""
+from .core import filters
+from .core.wfs import WfsClient
 
-from .base_wfs_client import BaseWFSClient
-
-LOG_TAG = "PD_GUGiK"
+DEFAULT_URL = "https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WFS/Skorowidze"
 
 
-class WFSIndexClient(BaseWFSClient):
-    """
-    Klient WFS dla usług skorowidzowych GUGiK (Ortofotomapy, NMT itp.).
+class WFSIndexClient(WfsClient):
+    def __init__(self, url: str = DEFAULT_URL):
+        super().__init__(url, typename="", geom_field="gugik:msGeometry")
 
-    Różni się od klientów EGIB/RCN trzema rzeczami:
-      - dynamiczna nazwa warstwy (przekazywana przy każdym download())
-      - inne pole geometrii: gugik:msGeometry
-      - inne URL (przekazywane w konstruktorze)
-    """
+    def build_spatial_filter(self, wkt: str, use_bbox: bool = True) -> str:
+        return filters.spatial(self.geom_field, wkt, use_bbox)
 
-    # Domyślne pole geometrii dla usług skorowidzowych GUGiK
-    geom_field = "gugik:msGeometry"
-
-    def __init__(self, url: str = "https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WFS/Skorowidze"):
-        super().__init__()
-        self.url = url
-        # layer_name jest dynamiczne – ustawiane per-zapytanie w download()
-
-    def download(self, filter_xml: str, layer_name: str,
-                 start_index: int = 0, count: int = 1000,
-                 attributes=None) -> str:
-        """
-        Pobiera obiekty z konkretnej warstwy skorowidza.
-
-        :param layer_name: Nazwa typenames, np. 'gugik:SkorowidzOrtofomapy2025'
-        """
-        # Tymczasowo nadpisujemy layer_name na czas tego zapytania
-        original = self.layer_name
-        self.layer_name = layer_name
-        try:
-            return super().download(filter_xml, start_index=start_index,
-                                    count=count, attributes=attributes)
-        finally:
-            self.layer_name = original
+    def download(self, filter_xml: str, layer_name: str, start_index: int = 0,
+                 count: int = 1000, attributes=None) -> str:
+        """Strona wyników z warstwy `layer_name`, np. 'gugik:SkorowidzOrtofomapy2025'."""
+        self.typename = layer_name
+        return self.page(filter_xml, start_index, count, attributes)
