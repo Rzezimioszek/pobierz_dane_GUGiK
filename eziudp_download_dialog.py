@@ -61,11 +61,11 @@ class EziudpWidget(QWidget):
         lay_layers = QGridLayout()
         lay_layers.setSpacing(4)
 
-        # Grupuj wpisy wizualnie co 2 kolumny
+        # Jedna kolumna – mieści się w wąskim panelu bocznym
         for i, entry in enumerate(AVAILABLE_LAYERS):
             chk = QCheckBox(entry["label"])
             chk.setChecked(False)
-            lay_layers.addWidget(chk, i // 2, i % 2)
+            lay_layers.addWidget(chk, i, 0, 1, 2)
             self._layer_checks[entry["key"]] = chk
 
         # Przyciski zaznacz/odznacz wszystko
@@ -79,7 +79,7 @@ class EziudpWidget(QWidget):
         row_sel.addWidget(btn_all)
         row_sel.addWidget(btn_none)
         row_sel.addStretch()
-        lay_layers.addLayout(row_sel, (len(AVAILABLE_LAYERS) + 1) // 2, 0, 1, 2)
+        lay_layers.addLayout(row_sel, len(AVAILABLE_LAYERS), 0, 1, 2)
         grp_layers.setLayout(lay_layers)
         main.addWidget(grp_layers)
 

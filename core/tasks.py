@@ -157,3 +157,59 @@ class FileDownloadTask(QgsTask):
         else:
             log.error(f"[Plik] Błąd pobierania {self.url}: {self.error}")
         self.done.emit(self.path if ok else "")
+
+
+class BoundaryTask(QgsTask):
+    """Granica jednostki z PRG w tle; `done(QgsGeometry or None)`."""
+    done = pyqtSignal(object)
+
+    def __init__(self, teryt: str):
+        super().__init__(f"Granica PRG: {teryt}", QgsTask.Flag.CanCancel)
+        from ..prg_client import PRGClient
+        self.teryt = teryt
+        self.client = PRGClient()
+        self.geometry = None
+
+    def run(self) -> bool:
+        try:
+            self.geometry = self.client.get_boundary_geometry(self.teryt)
+        except Exception as exc:
+            log.warning(f"[PRG] {self.teryt}: {exc}")
+        return self.geometry is not None and not self.geometry.isEmpty()
+
+    def finished(self, ok: bool) -> None:
+        self.done.emit(self.geometry if ok else None)
+
+
+class SkorowidzSearchTask(QgsTask):
+    """
+    Szuka arkuszy w skorowidzu dla listy warstw (np. roczników) i geometrii.
+    `done(features, errors)`: features jak gml.read_typed, errors [(warstwa, komunikat)].
+    Rocznik, którego nie ma w usłudze, trafia do errors i nie przerywa reszty.
+    """
+    done = pyqtSignal(list, list)
+
+    def __init__(self, url: str, layer_names: list, geom: QgsGeometry):
+        super().__init__("Wyszukiwanie w skorowidzu…", QgsTask.Flag.CanCancel)
+        from ..wfs_index_client import WFSIndexClient
+        self.client = WFSIndexClient(url)
+        self.layer_names = list(layer_names)
+        self.filter_xml = self.client.build_spatial_filter(geom.asWkt())
+        self.features = []
+        self.errors = []
+
+    def run(self) -> bool:
+        n = len(self.layer_names)
+        for i, name in enumerate(self.layer_names):
+            if self.isCanceled():
+                return False
+            try:
+                self.features.extend(gml.read_typed(self.client.download(self.filter_xml, name)))
+            except Exception as exc:
+                log.warning(f"[Skorowidz] {name}: {exc}")
+                self.errors.append((name, str(exc)))
+            self.setProgress(100.0 * (i + 1) / n)
+        return True
+
+    def finished(self, ok: bool) -> None:
+        self.done.emit(self.features if ok else [], self.errors)

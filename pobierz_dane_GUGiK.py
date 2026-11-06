@@ -27,7 +27,7 @@ from .qt_compat import QAction
 
 
 # Import the code for the DockWidget
-from .pobierz_dane_GUGiK_dockwidget import PD_GUGiKDockWidget
+from .ui.dock import PD_GUGiKDock
 import os.path
 
 
@@ -220,7 +220,7 @@ class PD_GUGiK:
             #    removed on close (see self.onClosePlugin method)
             if self.dockwidget == None:
                 # Create the dockwidget (after translation) and keep reference
-                self.dockwidget = PD_GUGiKDockWidget()
+                self.dockwidget = PD_GUGiKDock(self.iface)
 
             # connect to provide cleanup on closing of dockwidget
             self.dockwidget.closingPlugin.connect(self.onClosePlugin)

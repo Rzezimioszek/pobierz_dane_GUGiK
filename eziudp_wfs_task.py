@@ -113,7 +113,7 @@ AVAILABLE_LAYERS = [
     },
     {
         "key":           "bdot500",
-        "label":         "Budynki i obiekty towarzyszące (BDOT500)",
+        "label":         "Budynki i obiekty tow. (BDOT500)",
         "zbior":         "bdot500",
         "layer_pattern": "budynki",
     },

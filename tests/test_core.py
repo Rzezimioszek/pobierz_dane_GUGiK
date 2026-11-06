@@ -3,7 +3,6 @@
 import dataclasses
 import importlib
 import os
-import re
 
 import pytest
 
@@ -19,16 +18,14 @@ def mod(name):
 
 # ---------------------------------------------------------------- katalog
 
-def _ui_labels():
-    ui = open(os.path.join(PLUGIN_DIR, "pobierz_dane_GUGiK_dockwidget_base.ui"), encoding="utf-8").read()
-    i = ui.index('name="cmbObjType"')
-    return re.findall(r"<string>([^<]+)</string>", ui[i:ui.index("</widget>", i)])
-
-
-def test_every_list_entry_has_a_source():
+def test_every_source_is_in_the_picker():
+    from qgis.PyQt.QtCore import Qt
     catalog = mod("catalog")
-    missing = [l for l in _ui_labels() if catalog.source_for_label(l) is None]
-    assert missing == []
+    widgets = importlib.import_module(f"{PLUGIN_NAME}.ui.widgets")
+    picker = widgets.SourcePicker()
+    keys = {it.data(0, Qt.ItemDataRole.UserRole)[1] for it in picker._items}
+    assert {s.label for s in catalog.SOURCES} <= keys
+    assert len(catalog.SOURCES) == 64
 
 
 def test_styles_exist():
