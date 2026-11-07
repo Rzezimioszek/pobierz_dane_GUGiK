@@ -524,3 +524,71 @@ def test_prefix_field_names_download_and_summary(dock):
     assert [l.name() for l in QgsProject.instance().mapLayers().values()] == ["Projekt_A_Dzialki"]
     dock.output.ed_prefix.clear()
     assert not dock.output.prefix_hint.isVisible()
+
+
+class _Files:
+    """Serwer plików: /ok.tif zwraca bajty, /zly.tif – 404."""
+
+    def __init__(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        self.hits = []
+        outer = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                outer.hits.append(self.path)
+                if "zly" in self.path:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                data = b"II*\x00" + b"0" * 2000
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        self.server = HTTPServer(("127.0.0.1", 0), H)
+        self.url = f"http://127.0.0.1:{self.server.server_port}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+
+
+def test_sheet_downloads_skip_existing_and_leave_no_partial_files(dock, tmp_path, monkeypatch):
+    sheets = importlib.import_module(f"{PLUGIN_NAME}.ui.sheets")
+    net = importlib.import_module(f"{PLUGIN_NAME}.core.net")
+    monkeypatch.setattr(net, "MAX_RETRIES", 0)
+    monkeypatch.setattr(dock, "_load_file_as_layer", lambda path, name: True)
+    srv = _Files()
+    try:
+        (tmp_path / "jest.tif").write_bytes(b"x" * 100)
+
+        def sheet(name):
+            return sheets.Sheet(name, f"{srv.url}/{name}", "2025", "RGB", 0, None, {})
+        dock._load_rasters([sheet("jest.tif"), sheet("ok.tif"), sheet("zly.tif")], True,
+                           folder=str(tmp_path))
+        for _ in range(3):
+            _wait(dock)
+    finally:
+        srv.close()
+    assert srv.hits == ["/ok.tif", "/zly.tif"]          # istniejący plik pominięty
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["jest.tif", "ok.tif"]
+    results = [dock.tasks.rows.itemAt(i).widget().result.text() for i in range(dock.tasks.rows.count())]
+    assert any("404" in r for r in results)
+
+
+def test_sheets_window_is_modeless_and_single(dock):
+    from test_dialogs import _features
+    first = dock._show_sheets(_features(), "ortofotomapa")
+    assert not first.isModal() and first.isVisible()
+    second = dock._show_sheets(_features(), "ortofotomapa")
+    assert not first.isVisible() and dock._sheets is second
+    from qgis.core import QgsProject
+    assert len(QgsProject.instance().mapLayers()) == 1
+    second.close()
+    assert dock._sheets is None and not QgsProject.instance().mapLayers()

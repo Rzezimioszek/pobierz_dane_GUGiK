@@ -8,7 +8,7 @@ qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 supportsQt6=True
 description=Wtyczka do pobierania obiektów z usługi zbiorczej WFS EGIB. Plugin for downloading features from the EGiB collective WFS service.
-version=1.9.5
+version=1.9.6
 author=Główny Urząd Geodezji i Kartografii (GUGiK) - Łukasz Świątek
 email=uslugi.iip@gugik.gov.pl
 
@@ -27,6 +27,13 @@ repository=https://github.com/GlownyUrzadGeodezjiIKartografii/pobierz_dane_GUGiK
 hasProcessingProvider=no
 # Uncomment the following line and add your changelog:
 changelog=
+	1.9.6
+		- skorowidze: nowe okno wyboru arkuszy – zasięgi wszystkich znalezionych arkuszy jako warstwa na mapie, wybrane podświetlone; okno nie blokuje mapy
+		- wybór arkuszy kliknięciem na mapie („Wybieraj na mapie”), w tabeli albo zwykłymi narzędziami zaznaczania QGIS – wszystko zsynchronizowane
+		- filtr rocznika, typu (np. RGB/CIR) i godła; przycisk „Najnowsze” zostawia dla każdego godła najnowszy rocznik
+		- łączny rozmiar wybranych plików (gdy usługa go podaje) i rozmiar w wierszu zadania
+		- pliki już obecne w folderze są pomijane i tylko wczytywane; przerwane pobieranie nie zostawia niepełnego pliku
+		- usunięto stare okno wyników skorowidza (wfs_index_dialog.py)
 	1.9.5
 		- krok 3: „Prefiks nazw” – np. ProjektA daje warstwy ProjektA_Dzialki, ProjektA_Budynki w podgrupie GUGiK/ProjektA; kolejne pobrania z tym prefiksem dopisują się do tych warstw (także w GeoPackage, paczkach opendata i EZiUDP)
 		- skrót wyboru w nagłówku kroku skracany wielokropkiem zamiast poszerzać panel

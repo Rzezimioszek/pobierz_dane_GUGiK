@@ -7,6 +7,7 @@ Zadania w tle. Cała praca sieciowa wtyczki odbywa się tutaj, nigdy w wątku in
     HitsTask         – liczba obiektów pasujących do filtra
     FileDownloadTask – plik (paczki opendata, rastry ze skorowidzów) na dysk
 """
+import os
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -145,24 +146,35 @@ class FileDownloadTask(QgsTask):
         self.session = net.make_session()
 
     def run(self) -> bool:
+        # Zapis do „.part” i zmiana nazwy na końcu: przerwany plik nie udaje gotowego
+        part = self.path + ".part"
         try:
             with self.session.get(self.url, stream=True, timeout=900) as resp:
                 resp.raise_for_status()
                 total = int(resp.headers.get("content-length", 0))
                 got = 0
-                with open(self.path, "wb") as f:
+                with open(part, "wb") as f:
                     for chunk in resp.iter_content(chunk_size=self.CHUNK):
                         if self.isCanceled():
-                            return False
+                            break
                         if chunk:
                             f.write(chunk)
                             got += len(chunk)
                             if total:
                                 self.setProgress(100.0 * got / total)
+            if self.isCanceled():
+                return False
+            os.replace(part, self.path)
             return True
         except Exception as exc:
             self.error = exc
             return False
+        finally:
+            if os.path.exists(part):
+                try:
+                    os.remove(part)
+                except OSError:
+                    pass
 
     def finished(self, ok: bool) -> None:
         _close(self.session)
@@ -221,7 +233,10 @@ class SkorowidzSearchTask(QgsTask):
             if self.isCanceled():
                 return False
             try:
-                self.features.extend(gml.read_typed(self.client.download(self.filter_xml, name)))
+                found = gml.read_typed(self.client.download(self.filter_xml, name))
+                for f in found:
+                    f["layer"] = name      # rocznik z nazwy warstwy, gdy brak go w atrybutach
+                self.features.extend(found)
             except Exception as exc:
                 log.warning(f"[Skorowidz] {name}: {exc}")
                 self.errors.append((name, net.friendly(exc)))

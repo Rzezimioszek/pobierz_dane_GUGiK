@@ -27,7 +27,7 @@ from .widgets import (
 from ..core import catalog, filters, layers, log, net, tasks
 from ..prg_client import PRGClient
 from ..qt_compat import GEOM_POLYGON
-from ..wfs_index_dialog import WfsIndexResultsDialog
+from .sheets import SheetsDialog, already_downloaded, format_size
 
 EPSG2180 = "EPSG:2180"
 STYLE_SHEET = os.path.join(os.path.dirname(os.path.abspath(__file__)), "style.qss")
@@ -72,6 +72,7 @@ class PD_GUGiKDock(QDockWidget):
         self._shown = None            # co jest podświetlone: ("rect"|"polygon"|"unit", id)
         self._draw_tools = {}         # "rect" / "polygon" → narzędzie mapy
         self._raster_queue = []
+        self._sheets = None           # otwarte okno arkuszy skorowidza
 
         self._build()
         self._validate()
@@ -172,6 +173,8 @@ class PD_GUGiKDock(QDockWidget):
                 pass
         self.running_tasks.clear()
         self._raster_queue = []
+        if self._sheets is not None:
+            self._sheets.close()
         for attr in ("_task", "_boundary_task"):
             t = getattr(self.eziudp, attr, None)
             if t is not None:
@@ -631,10 +634,19 @@ class PD_GUGiKDock(QDockWidget):
                 row.finish(msg + note, ok=not errors or len(errors) < len(names))
                 return
             row.finish(tr("Znaleziono arkuszy: ") + str(len(features)) + note)
-            dialog = WfsIndexResultsDialog(features, self)
-            if dialog.exec() and dialog.selected_urls:
-                self._load_rasters(dialog.selected_urls, dialog.load_mode)
+            self._show_sheets(features, svc.label)
         self._run(task, done)
+
+    def _show_sheets(self, features, title) -> SheetsDialog:
+        """Okno wyboru arkuszy (niemodalne – w tym czasie można klikać na mapie)."""
+        if self._sheets is not None:
+            self._sheets.close()
+        dlg = SheetsDialog(features, self.canvas, title, self)
+        dlg.download_requested.connect(self._load_rasters)
+        dlg.finished.connect(lambda *_: setattr(self, "_sheets", None))
+        self._sheets = dlg
+        dlg.show()
+        return dlg
 
     def _load_file_as_layer(self, path_or_url: str, name: str) -> bool:
         lower = path_or_url.lower()
@@ -650,24 +662,37 @@ class PD_GUGiKDock(QDockWidget):
         log.warning(f"Nie udało się wczytać: {path_or_url}")
         return False
 
-    def _load_rasters(self, urls, mode) -> None:
-        if mode == "vsicurl":
-            added = sum(1 for _, url in urls if self._load_file_as_layer(f"/vsicurl/{url}", url.split("/")[-1]))
-            self.notify(tr("Dodano warstw strumieniowych: ") + f"{added}/{len(urls)}")
-            return
-        folder = QFileDialog.getExistingDirectory(self, tr("Folder na pobrane pliki"))
+    def _load_rasters(self, sheets, skip_existing=True, folder=None) -> None:
+        """Pobiera wybrane arkusze do folderu; pliki już obecne tylko wczytuje."""
+        folder = folder or QFileDialog.getExistingDirectory(self, tr("Folder na pobrane pliki"))
         if not folder:
             return
-        self._raster_queue = [(url, os.path.join(folder, url.split("/")[-1])) for _, url in urls]
-        self._next_raster()
+        queue, present = [], []
+        for s in sheets:
+            path = os.path.join(folder, s.file_name)
+            if skip_existing and already_downloaded(path, s.size_mb):
+                present.append(path)
+            else:
+                queue.append((s.url, path, s.size_mb))
+        for path in present:
+            self._load_file_as_layer(path, os.path.basename(path))
+        if present:
+            self.notify(tr("Pominięto plików już obecnych w folderze: ") + str(len(present))
+                        + tr(" (wczytano je na mapę)."))
+        self._raster_queue.extend(queue)
+        if not any(isinstance(t, tasks.FileDownloadTask) for t in self.running_tasks):
+            self._next_raster()
 
     def _next_raster(self) -> None:
         """Pliki skorowidza po jednym, w tle; każdy po pobraniu trafia na mapę."""
         if not self._raster_queue:
             return
-        url, path = self._raster_queue.pop(0)
+        url, path, size_mb = self._raster_queue.pop(0)
         task = tasks.FileDownloadTask(url, path, os.path.basename(path))
-        row = self.tasks.add(tr("Plik ") + os.path.basename(path), task)
+        size = format_size(size_mb)
+        left = len(self._raster_queue)
+        row = self.tasks.add(tr("Plik ") + os.path.basename(path) + (f" ({size})" if size else "")
+                             + (tr(" · w kolejce: ") + str(left) if left else ""), task)
 
         def done(saved):
             if saved:
