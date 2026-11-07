@@ -430,6 +430,14 @@ class Scope:
             "ids": f"{len(self.ids)} identyfikatorów", "obreb": f"obręb {self.obreb}, działka {self.nr}",
         }.get(self.kind, self.kind)
 
+    def tag(self) -> str:
+        """Krótki fragment nazwy warstwy, gdy każde pobranie trafia do osobnej warstwy."""
+        return {
+            "teryt": self.teryt, "extent": "widok", "rect": "prostokat", "polygon": "wielokat",
+            "layer": self.layer.name() if self.layer else "warstwa", "ids": "ID",
+            "obreb": f"{self.obreb}_{self.nr}",
+        }.get(self.kind, self.kind)
+
 
 class ScopePicker(QWidget):
     """Zakładki sposobów wyboru zakresu; w danej chwili działa jeden."""
@@ -520,6 +528,10 @@ class ScopePicker(QWidget):
         self.btn_draw = QPushButton(tr("Rysuj na mapie…"))
         self.btn_draw.clicked.connect(self._start_draw)
         row.addWidget(self.btn_draw)
+        self.btn_clear_drawn = QPushButton(tr("Wyczyść"))
+        self.btn_clear_drawn.setToolTip(tr("Usuwa narysowany prostokąt lub wielokąt z mapy"))
+        self.btn_clear_drawn.clicked.connect(self.clear_drawn)
+        row.addWidget(self.btn_clear_drawn)
         row.addStretch(1)
         lay.addLayout(row)
         self.map_hint = hint_label()
@@ -535,6 +547,7 @@ class ScopePicker(QWidget):
         mode = self.map_mode()
         self.btn_draw.setEnabled(mode != "extent")
         drawn = self.drawn_rect if mode == "rect" else self.drawn_polygon if mode == "polygon" else None
+        self.btn_clear_drawn.setEnabled(drawn is not None)
         if mode == "extent":
             self.map_hint.setText(tr("Zakres = to, co widać teraz na mapie."))
         elif drawn is None:
@@ -556,6 +569,7 @@ class ScopePicker(QWidget):
         self.rb_rect.setChecked(True)
         self.map_hint.setText(tr("Zaznaczono prostokąt ") +
                               f"{rect.width():.0f} × {rect.height():.0f} " + tr("(jednostki mapy)."))
+        self.btn_clear_drawn.setEnabled(True)
         self.changed.emit()
 
     def set_drawn_polygon(self, geom) -> None:
@@ -563,7 +577,16 @@ class ScopePicker(QWidget):
         self.rb_polygon.setChecked(True)
         n = max(0, geom.constGet().nCoordinates() - 1)
         self.map_hint.setText(tr("Narysowano wielokąt, wierzchołków: ") + str(n))
+        self.btn_clear_drawn.setEnabled(True)
         self.changed.emit()
+
+    def clear_drawn(self) -> None:
+        """Kasuje narysowany kształt bieżącego trybu (podświetlenie znika samo)."""
+        if self.map_mode() == "polygon":
+            self.drawn_polygon = None
+        else:
+            self.drawn_rect = None
+        self._map_mode_changed()
 
     def _emit_changed(self, *_) -> None:
         self.changed.emit()
@@ -711,6 +734,11 @@ class OutputPicker(QWidget):
         self.chk_style = QCheckBox(tr("Wczytaj domyślny styl"))
         self.chk_style.setChecked(s.value(f"{SETTINGS}/load_style", True, type=bool))
         lay.addWidget(self.chk_style)
+        self.chk_separate = QCheckBox(tr("Każde pobranie w osobnej warstwie"))
+        self.chk_separate.setToolTip(tr("Np. Dzialki_1465_1, Dzialki_1465_2 zamiast dopisywania "
+                                        "kolejnych pobrań do jednej warstwy „Dzialki”."))
+        self.chk_separate.setChecked(s.value(f"{SETTINGS}/separate_layers", False, type=bool))
+        lay.addWidget(self.chk_separate)
 
         # Paczki opendata dla dużych zakresów (EGiB/RCN)
         self.package_row = QWidget()
@@ -750,7 +778,7 @@ class OutputPicker(QWidget):
         self.btn_fields.toggled.connect(self._toggle_fields)
 
         for sig in (self.rb_gpkg.toggled, self.fw_gpkg.fileChanged, self.chk_style.toggled,
-                    self.cmb_package.currentIndexChanged, self.list_attrs.itemChanged):
+                    self.chk_separate.toggled, self.cmb_package.currentIndexChanged, self.list_attrs.itemChanged):
             sig.connect(self._save)
         self._save()
 
@@ -764,6 +792,7 @@ class OutputPicker(QWidget):
         s.setValue(f"{SETTINGS}/output_mode", "gpkg" if self.rb_gpkg.isChecked() and path else "memory")
         s.setValue(f"{SETTINGS}/gpkg_path", path)
         s.setValue(f"{SETTINGS}/load_style", self.chk_style.isChecked())
+        s.setValue(f"{SETTINGS}/separate_layers", self.chk_separate.isChecked())
         s.setValue(f"{SETTINGS}/powiat_method", self.cmb_package.currentData())
         s.setValue(f"{SETTINGS}/egib_fields", self.selected_attributes() or EGIB_DZIALKI_ATTRIBUTES)
         self.fw_gpkg.setEnabled(self.rb_gpkg.isChecked())
@@ -777,7 +806,7 @@ class OutputPicker(QWidget):
 
     def output(self) -> layers.Output:
         return layers.Output(self.gpkg_path() if self.rb_gpkg.isChecked() else None,
-                             self.chk_style.isChecked())
+                             self.chk_style.isChecked(), self.chk_separate.isChecked())
 
     def selected_attributes(self) -> Optional[list]:
         """None = wszystkie pola (bez propertyName w zapytaniu)."""
@@ -821,9 +850,22 @@ class TaskRow(QFrame):
         self.bar.setTextVisible(False)
         self.bar.setRange(0, 100 if task is not None else 0)
         lay.addWidget(self.bar)
+        self.count = hint_label("taskCount")
+        self.count.setVisible(False)
+        lay.addWidget(self.count)
+        bottom = QHBoxLayout()
         self.result = hint_label("taskResult")
         self.result.setVisible(False)
-        lay.addWidget(self.result)
+        bottom.addWidget(self.result, 1)
+        self.btn_retry = QToolButton()
+        self.btn_retry.setObjectName("link")
+        self.btn_retry.setText(tr("Ponów"))
+        self.btn_retry.setToolTip(tr("Ponów tylko zapytania zakończone błędem"))
+        self.btn_retry.setVisible(False)
+        self.btn_retry.clicked.connect(self._retry)
+        bottom.addWidget(self.btn_retry, 0, Qt.AlignmentFlag.AlignTop)
+        lay.addLayout(bottom)
+        self._on_retry = None
         self.running = True
         if task is not None:
             task.progressChanged.connect(lambda p: self.bar.setValue(int(p)))
@@ -835,6 +877,23 @@ class TaskRow(QFrame):
         self.bar.setValue(0)
         task.progressChanged.connect(lambda p: self.bar.setValue(int(p)))
 
+    def set_count(self, n: int) -> None:
+        """Liczba pobranych obiektów w trakcie zadania."""
+        if self.running:
+            self.count.setText(tr("pobrano obiektów: ") + f"{n:,}".replace(",", " "))
+            self.count.setVisible(True)
+
+    def offer_retry(self, callback) -> None:
+        """Pokazuje „Ponów” po zakończeniu z błędami; `callback()` uruchamia ponowienie."""
+        self._on_retry = callback
+        self.btn_retry.setVisible(True)
+
+    def _retry(self) -> None:
+        self.btn_retry.setVisible(False)
+        callback, self._on_retry = self._on_retry, None
+        if callback is not None:
+            callback()
+
     def _cancel(self):
         if self.task is not None:
             self.task.cancel()
@@ -845,6 +904,7 @@ class TaskRow(QFrame):
             return
         self.running = False
         self.bar.setVisible(False)
+        self.count.setVisible(False)
         self.btn_cancel.setVisible(False)
         self.result.setText(("✓ " if ok else "⚠ ") + text)
         set_state(self.result, "ok" if ok else "warn")

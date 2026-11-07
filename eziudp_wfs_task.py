@@ -35,7 +35,7 @@ from qgis.PyQt.QtCore import pyqtSignal
 
 from .eziudp_client import EziudpClient
 from .bdsog_harmonizer import get_harmonizer
-from .core import layers
+from .core import gml, layers, net
 from .qt_compat import FIELD_STRING
 
 LOG_TAG = "PD_GUGiK"
@@ -84,6 +84,25 @@ AVAILABLE_LAYERS = [
         "label":         "Punkty graniczne (EGIB)",
         "zbior":         "egib",
         "layer_pattern": "punkty_graniczne",
+    },
+    # Użytki i kontury udostępnia tylko część usług powiatowych (np. ePODGiK)
+    {
+        "key":           "egib_uzy",
+        "label":         "Użytki gruntowe (EGIB)",
+        "zbior":         "egib",
+        "layer_pattern": "uzytki",
+        "layer_name":    "Uzytki",
+        "style":         "uzytki",
+        "optional":      True,
+    },
+    {
+        "key":           "egib_kon",
+        "label":         "Kontury klasyfikacyjne (EGIB)",
+        "zbior":         "egib",
+        "layer_pattern": "kontury",
+        "layer_name":    "Kontury_klasyfikacyjne",
+        "style":         "kontury_klasyfikacyjne",
+        "optional":      True,
     },
     # RCN w usługach powiatowych ma schemat jak RCN zbiorczy (działki, budynki, lokale);
     # nazwy warstw i style jak dla RCN zbiorczego, z sufiksem TERYT
@@ -146,6 +165,7 @@ class EziudpWfsReport:
     total_features: int = 0
     layers: list = field(default_factory=list)   # lista WfsLayerReport
     errors: list = field(default_factory=list)
+    skipped: list = field(default_factory=list)   # warstwy opcjonalne, których usługa nie ma
 
     def format_summary(self) -> str:
         lines = [
@@ -158,6 +178,9 @@ class EziudpWfsReport:
                 lines.append(f"  • {e}")
             if len(self.errors) > 10:
                 lines.append(f"  … i {len(self.errors) - 10} więcej")
+        if self.skipped:
+            lines.append("Pominięte (usługa nie ma takiej warstwy):")
+            lines.extend(f"  • {s}" for s in self.skipped[:10])
         return "\n".join(lines)
 
 
@@ -286,6 +309,74 @@ def _read_snapshot(
     return fields, QgsWkbTypes.displayString(wfs_layer.wkbType()), features
 
 
+_DIRECT_PAGE = 1000
+_DIRECT_MAX_PAGES = 300
+
+
+def _read_direct(
+    base_url: str,
+    layer_name: str,
+    bbox_rect: Optional[QgsRectangle],
+    clip_geom: Optional[QgsGeometry],
+    teryt: str,
+    wfs_url: str,
+    task_check_cancelled,
+) -> tuple:
+    """
+    Zapasowa ścieżka, gdy dostawca WFS QGIS odrzuci usługę (np. niepoprawny XML
+    w GetCapabilities): GetFeature WFS 2.0 stronami i własny parser GML.
+    Zwraca to samo co _read_snapshot (pola None = tekstowe z atrybutów).
+    """
+    session = net.make_session()
+    # Parametry „własne” usługi z adresu EZiUDP (np. map=...) zostają w zapytaniu
+    from urllib.parse import parse_qsl, urlsplit
+    own = {k: v for k, v in parse_qsl(urlsplit(wfs_url).query)
+           if k.lower() not in ("service", "request", "version", "acceptversions",
+                                "typename", "typenames")}
+    params = {
+        **own,
+        "service": "WFS", "version": "2.0.0", "request": "GetFeature",
+        "typenames": layer_name, "srsName": "urn:ogc:def:crs:EPSG::2180",
+        "count": _DIRECT_PAGE,
+    }
+    if bbox_rect is not None:
+        # URN EPSG:2180 – kolejność osi N, E
+        params["bbox"] = (f"{bbox_rect.yMinimum()},{bbox_rect.xMinimum()},"
+                          f"{bbox_rect.yMaximum()},{bbox_rect.xMaximum()},"
+                          f"urn:ogc:def:crs:EPSG::2180")
+    features, geom_type = [], ""
+    try:
+        for page in range(_DIRECT_MAX_PAGES):
+            if task_check_cancelled():
+                break
+            params["startIndex"] = page * _DIRECT_PAGE
+            text = net.get(session, base_url, params, timeout=180).text
+            error = gml.service_exception(text)
+            if error:
+                raise RuntimeError(f"Serwer zwrócił błąd: {error}")
+            batch = gml.parse_features(text)
+            for f in batch:
+                geom = f["geom"] if isinstance(f["geom"], QgsGeometry) else QgsGeometry.fromWkt(f["geom"])
+                if geom is None or geom.isEmpty():
+                    continue
+                if clip_geom is not None and not geom.intersects(clip_geom):
+                    continue
+                if not geom_type:
+                    geom_type = QgsWkbTypes.displayString(QgsWkbTypes.multiType(geom.wkbType()))
+                attrs = dict(f["attrs"])
+                attrs["teryt_powiatu"] = teryt
+                attrs["zrodlo_wfs"] = wfs_url
+                features.append({"geom": geom, "attrs": attrs})
+            if len(batch) < _DIRECT_PAGE:
+                break
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
+    return None, geom_type, features
+
+
 # ---------------------------------------------------------------------------
 # Główne zadanie QgsTask
 # ---------------------------------------------------------------------------
@@ -386,7 +477,8 @@ class EziudpWfsTask(QgsTask):
             try:
                 layers.write(item["features"], item["name"], item["geom_type"],
                              style=item["style"], load_style=self.output.load_style,
-                             fields=item["fields"], gpkg_path=self.output.gpkg_path)
+                             fields=item["fields"], gpkg_path=self.output.gpkg_path,
+                             info=item.get("info"))
             except Exception as exc:
                 msg = f"Zapis warstwy {item['name']} nie powiódł się: {exc}"
                 QgsMessageLog.logMessage(f"[EziudpWfsTask] {msg}", LOG_TAG, Qgis.MessageLevel.Critical)
@@ -453,13 +545,17 @@ class EziudpWfsTask(QgsTask):
 
                 if not wfs_layer_name:
                     msg = (
-                        f"TERYT {teryt}: brak warstwy dla key={key} "
-                        f"(wzorzec={pattern!r}) w {all_wfs_layers}"
+                        f"TERYT {teryt}: usługa powiatu nie udostępnia warstwy "
+                        f"„{layer_cfg['label']}”"
                     )
                     QgsMessageLog.logMessage(
-                        f"[EziudpWfsTask] {msg}", LOG_TAG, Qgis.MessageLevel.Warning,
+                        f"[EziudpWfsTask] {msg} (wzorzec={pattern!r}, warstwy: {all_wfs_layers})",
+                        LOG_TAG, Qgis.MessageLevel.Info,
                     )
-                    self._report.errors.append(msg)
+                    if layer_cfg.get("optional"):
+                        self._report.skipped.append(msg)
+                    else:
+                        self._report.errors.append(msg)
                     continue
 
                 report = self._fetch_one_layer(
@@ -537,14 +633,8 @@ class EziudpWfsTask(QgsTask):
                 wfs_vl, version = _try_wfs_layer(base_url, wfs_layer_name, None)
 
             if wfs_vl is None:
-                report.error = (
-                    f"QgsVectorLayer (WFS) nieprawidłowa dla obu wersji: "
-                    f"{wfs_layer_name} @ {base_url}"
-                )
-                QgsMessageLog.logMessage(
-                    f"[EziudpWfsTask] {report.error}", LOG_TAG, Qgis.MessageLevel.Warning,
-                )
-                return report
+                return self._fetch_direct(report, teryt, base_url, wfs_url, wfs_layer_name,
+                                          mem_layer_name, style_name)
 
         report.wfs_version = version
 
@@ -591,10 +681,41 @@ class EziudpWfsTask(QgsTask):
         if features:
             self._pending.append({"name": mem_layer_name, "fields": fields,
                                   "geom_type": geom_type, "style": style_name,
-                                  "features": features})
+                                  "features": features,
+                                  "info": {"url": wfs_url, "typename": wfs_layer_name,
+                                           "scope": f"TERYT {teryt} (EZiUDP)"}})
             self._existing_names.add(mem_layer_name)
 
         report.feature_count = count
+        report.success = True
+        return report
+
+    def _fetch_direct(self, report, teryt, base_url, wfs_url, wfs_layer_name,
+                      mem_layer_name, style_name) -> WfsLayerReport:
+        """Dostawca WFS QGIS nie przyjął usługi – pobieranie przez własny klient GML."""
+        QgsMessageLog.logMessage(
+            f"[EziudpWfsTask] TERYT {teryt} '{wfs_layer_name}': dostawca WFS QGIS odrzucił "
+            f"usługę – pobieram bezpośrednio (GetFeature + własny parser GML).",
+            LOG_TAG, Qgis.MessageLevel.Info,
+        )
+        try:
+            _, geom_type, features = _read_direct(
+                base_url, wfs_layer_name, self._bbox_rect, self._clip_geom,
+                teryt, wfs_url, self.isCanceled)
+        except Exception as exc:
+            report.error = f"{wfs_layer_name} @ {base_url}: {exc}"
+            QgsMessageLog.logMessage(f"[EziudpWfsTask] {report.error}", LOG_TAG,
+                                     Qgis.MessageLevel.Warning)
+            return report
+        report.wfs_version = "2.0.0 (GML)"
+        if features:
+            self._pending.append({"name": mem_layer_name, "fields": None,
+                                  "geom_type": geom_type, "style": style_name,
+                                  "features": features,
+                                  "info": {"url": wfs_url, "typename": wfs_layer_name,
+                                           "scope": f"TERYT {teryt} (EZiUDP)"}})
+            self._existing_names.add(mem_layer_name)
+        report.feature_count = len(features)
         report.success = True
         return report
 

@@ -24,7 +24,7 @@ from .map_tools import PolygonMapTool, RectangleMapTool, make_band, show_geometr
 from .widgets import (
     OutputPicker, ScopePicker, SourcePicker, TasksPanel, hint_label, set_state, step_box,
 )
-from ..core import catalog, filters, layers, log, tasks
+from ..core import catalog, filters, layers, log, net, tasks
 from ..prg_client import PRGClient
 from ..qt_compat import GEOM_POLYGON
 from ..wfs_index_dialog import WfsIndexResultsDialog
@@ -65,6 +65,7 @@ class PD_GUGiKDock(QDockWidget):
         self.prg_client = PRGClient()
 
         self.running_tasks = []
+        self._tag = ""                # fragment nazwy warstwy dla „osobnej warstwy”
         self.map_tool = None
         self._prev_tool = None
         self.band = make_band(self.canvas)
@@ -390,6 +391,7 @@ class PD_GUGiKDock(QDockWidget):
         sel = self.sources.selection()
         scope = self.scope.scope()
         out = self.output.output()
+        self._tag = scope.tag()
         self._clear_highlight()   # zakres przyjęty – podświetlenie już niepotrzebne
 
         if scope.kind == "teryt":
@@ -467,7 +469,8 @@ class PD_GUGiKDock(QDockWidget):
 
         def done(saved):
             if not saved:
-                row.finish(tr("Nie udało się pobrać paczki (szczegóły w dzienniku)."), ok=False)
+                row.finish(tr("Nie udało się pobrać paczki: ") + net.friendly(task.error)
+                           if task.error else tr("Nie udało się pobrać paczki."), ok=False)
                 return
             try:
                 added = layers.add_package(saved, self.output.chk_style.isChecked())
@@ -555,22 +558,25 @@ class PD_GUGiKDock(QDockWidget):
 
     # ------------------------------------------------------------------ pobieranie WFS
 
-    def _download(self, source, queries, out, scope_text, row=None) -> None:
+    def _download(self, source, queries, out, scope_text, row=None, tag=None) -> None:
         if not queries:
             return
+        tag = self._tag if tag is None else tag
         task = tasks.WfsDownloadTask(source, queries, self.output.selected_attributes())
         title = f"{SourcePicker.display_name(source)} · {scope_text}"
         if row is None:
             row = self.tasks.add(title, task)
         else:
             row.attach(task)
+        task.count_changed.connect(row.set_count)
 
         def done(result):
             n = len(result.features)
             written = []
             if n:
                 try:
-                    written = layers.write_source(result.features, source, out)
+                    written = layers.write_source(result.features, source, out,
+                                                  scope=scope_text, tag=tag)
                 except Exception as exc:
                     row.finish(tr("Nie udało się zapisać wyników: ") + str(exc), ok=False)
                     return
@@ -582,10 +588,19 @@ class PD_GUGiKDock(QDockWidget):
             elif not n:
                 row.finish(tr("Brak obiektów w tym zakresie."), ok=True)
             elif result.errors:
-                row.finish(f"{n} " + tr("obiektów → ") + names + "; " + str(len(result.errors)) +
-                           tr(" zapytań nie powiodło się (dziennik)."), ok=False)
+                k = len(result.errors)
+                failed_txt = (tr("1 zapytanie nie powiodło się") if k == 1 else
+                              f"{k} " + (tr("zapytania nie powiodły się") if 2 <= k % 10 <= 4
+                                         and not 12 <= k % 100 <= 14
+                                         else tr("zapytań nie powiodło się")))
+                row.finish(f"{n} " + tr("obiektów → ") + names + "; " + failed_txt + ": "
+                           + result.errors[0][1], ok=False)
             else:
                 row.finish(f"{n} " + tr("obiektów → ") + names)
+            if result.failed and not result.canceled:
+                failed = list(result.failed)
+                row.offer_retry(lambda: self._download(
+                    source, failed, out, scope_text + tr(" (ponowienie)"), tag=tag))
         self._run(task, done)
 
     # ================================================================== skorowidze
@@ -627,7 +642,7 @@ class PD_GUGiKDock(QDockWidget):
         else:
             layer = QgsRasterLayer(path_or_url, name)
         if layer.isValid():
-            QgsProject.instance().addMapLayer(layer)
+            layers.add_to_project(layer)
             return True
         log.warning(f"Nie udało się wczytać: {path_or_url}")
         return False
@@ -656,7 +671,8 @@ class PD_GUGiKDock(QDockWidget):
                 self._load_file_as_layer(saved, os.path.basename(saved))
                 row.finish(tr("Zapisano i wczytano."))
             else:
-                row.finish(tr("Nie pobrano (szczegóły w dzienniku)."), ok=False)
+                row.finish(tr("Nie pobrano: ") + net.friendly(task.error)
+                           if task.error else tr("Nie pobrano."), ok=False)
                 if task.isCanceled():
                     self._raster_queue = []
             self._next_raster()

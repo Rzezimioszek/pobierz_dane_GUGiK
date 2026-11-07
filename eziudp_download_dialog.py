@@ -266,12 +266,16 @@ class EziudpWidget(QWidget):
         self._log("\n" + report.format_summary())
 
         dock = self._dock()
-        if report.total_features == 0:
+        if report.total_features == 0 and report.skipped and not report.errors:
+            text, level = "EZiUDP: " + "; ".join(report.skipped[:3]) + ".", Qgis.MessageLevel.Warning
+        elif report.total_features == 0:
             text, level = "EZiUDP: nie pobrano żadnych obiektów – szczegóły w dzienniku poniżej.", \
                 Qgis.MessageLevel.Warning
         else:
             text, level = (f"EZiUDP: pobrano {report.total_features} obiektów z "
-                           f"{report.successful}/{report.total_teryts} powiatów."), Qgis.MessageLevel.Success
+                           f"{report.successful}/{report.total_teryts} powiatów."
+                           + (f" Pominięte warstwy: {len(report.skipped)} (brak w usłudze)."
+                              if report.skipped else "")), Qgis.MessageLevel.Success
         if dock is not None and hasattr(dock, "notify"):
             dock.notify(text, level)
         elif report.total_features == 0:

@@ -104,3 +104,50 @@ def test_get_wfs_urls_falls_back_to_html(monkeypatch):
     monkeypatch.setattr(c, "_fetch", lambda url: OLD)
     res = c.get_wfs_urls("1261", "bdsog")
     assert res.success and res.records[0].url_wfs == "https://ows.example.pl/bdsog/wfs"
+
+
+def test_egib_landuse_and_contours_from_epodgik_capabilities(monkeypatch):
+    """Powiat miński (ePODGiK): obok działek i budynków są użytki i kontury."""
+    import os
+    from conftest import FIXTURES
+    task = importlib.import_module(f"{PLUGIN_NAME}.eziudp_wfs_task")
+    with open(os.path.join(FIXTURES, "egib_minsk_capabilities.xml"), "rb") as f:
+        caps = f.read()
+    c = client()
+    monkeypatch.setattr(c, "_get_capabilities_layers", lambda url: c._extract_layer_names(caps))
+    names = c.get_layer_names("https://wms.epodgik.pl/cgi-bin/minsk?", "egib")
+    pick = task.EziudpWfsTask._pick_wfs_layer
+    keys = task.AVAILABLE_LAYERS_BY_KEY
+    got = {k: pick(names, keys[k]["layer_pattern"])
+           for k in ("egib_dzi", "egib_bud", "egib_pkt", "egib_uzy", "egib_kon")}
+    assert got == {"egib_dzi": "ms:dzialki", "egib_bud": "ms:budynki",
+                   "egib_pkt": "ms:punkty_graniczne", "egib_uzy": "ms:uzytki",
+                   "egib_kon": "ms:kontury_klasyfikacyjne"}
+    assert keys["egib_uzy"]["optional"] and keys["egib_kon"]["optional"]
+
+
+def test_optional_layer_missing_is_skipped_not_error():
+    task = importlib.import_module(f"{PLUGIN_NAME}.eziudp_wfs_task")
+    rep = task.EziudpWfsReport()
+    rep.skipped.append("TERYT 1465: usługa powiatu nie udostępnia warstwy „Użytki gruntowe (EGIB)”")
+    text = rep.format_summary()
+    assert "Pominięte" in text and "Błędy" not in text
+
+
+def test_direct_gml_fallback_pages_and_keeps_own_params():
+    """Gdy dostawca WFS QGIS odrzuci usługę – GetFeature stronami i własny parser."""
+    import os
+    os.environ["NO_PROXY"] = "127.0.0.1,localhost"
+    from fake_wfs import FakeWfs
+    task = importlib.import_module(f"{PLUGIN_NAME}.eziudp_wfs_task")
+    srv = FakeWfs(total=1005)
+    try:
+        fields, geom_type, feats = task._read_direct(
+            srv.url, "ms:uzytki", None, None, "1412", srv.url + "?map=minsk&service=WFS",
+            lambda: False)
+    finally:
+        srv.close()
+    assert fields is None and len(feats) == 1005 and geom_type.startswith("Multi")
+    assert [int(r["startIndex"]) for r in srv.requests] == [0, 1000]
+    assert srv.requests[0]["map"] == "minsk" and srv.requests[0]["typenames"] == "ms:uzytki"
+    assert feats[0]["attrs"]["teryt_powiatu"] == "1412"

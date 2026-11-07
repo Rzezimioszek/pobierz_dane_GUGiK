@@ -370,7 +370,7 @@ def test_layer_multipolygon_uses_both_parts(dock):
 
 
 def test_drawn_polygon_download_and_highlight(dock):
-    from qgis.core import QgsCoordinateReferenceSystem, QgsGeometry
+    from qgis.core import QgsCoordinateReferenceSystem
     dock.canvas.setDestinationCrs(QgsCoordinateReferenceSystem("EPSG:2180"))
     dock.sources.select_labels(["dzialki (EGIB)"])
     dock.scope.tabs.setCurrentIndex(ScopeTab.MAP)
@@ -450,3 +450,61 @@ def test_skorowidz_years_reach_current_year():
     year = datetime.date.today().year
     orto = services.SKOROWIDZ_BY_LABEL["ortofotomapa"]
     assert orto.year_range[0] == year
+
+
+def test_clear_button_removes_drawn_shape(dock):
+    from qgis.core import QgsCoordinateReferenceSystem, QgsGeometry
+    dock.canvas.setDestinationCrs(QgsCoordinateReferenceSystem("EPSG:2180"))
+    dock.sources.select_labels(["dzialki (EGIB)"])
+    dock.scope.tabs.setCurrentIndex(ScopeTab.MAP)
+    dock.scope.rb_polygon.setChecked(True)
+    assert not dock.scope.btn_clear_drawn.isEnabled()
+    dock._on_polygon(QgsGeometry.fromWkt(
+        "POLYGON((284002 366002, 284008 366002, 284008 366048, 284002 366002))"))
+    assert dock.scope.btn_clear_drawn.isEnabled() and _band_vertices(dock) > 0
+    assert dock.btn_download.isEnabled()
+    dock.scope.btn_clear_drawn.click()
+    assert dock.scope.drawn_polygon is None and _band_vertices(dock) == 0
+    assert not dock.btn_download.isEnabled() and not dock.scope.btn_clear_drawn.isEnabled()
+
+
+def test_failed_query_shows_count_and_retry(dock, monkeypatch):
+    """Błąd serwera: czytelny komunikat i „Ponów” tylko dla nieudanych zapytań."""
+    net = importlib.import_module(f"{PLUGIN_NAME}.core.net")
+    catalog = importlib.import_module(f"{PLUGIN_NAME}.core.catalog")
+    monkeypatch.setattr(net, "MAX_RETRIES", 1)
+    srv = FakeWfs(total=3, fail_filters=["ZLY"])
+    try:
+        monkeypatch.setitem(catalog.SOURCES_BY_LABEL, "dzialki (EGIB)", dataclasses.replace(
+            catalog.SOURCES_BY_LABEL["dzialki (EGIB)"], url=srv.url))
+        dock.sources.select_labels(["dzialki (EGIB)"])
+        dock.scope.tabs.setCurrentIndex(ScopeTab.IDS)
+        dock.scope.txt_ids.setPlainText("ZLY_1")
+        dock.start()
+        _wait(dock)
+        row = dock.tasks.rows.itemAt(0).widget()
+        assert "⚠" in row.result.text() and "500" in row.result.text()
+        assert not row.btn_retry.isHidden()
+        srv.fail_filters = []
+        row.btn_retry.click()
+        assert row.btn_retry.isHidden()
+        _wait(dock)
+        again = dock.tasks.rows.itemAt(0).widget()
+        assert again is not row and "ponowienie" in again.title.text()
+        assert "✓" in again.result.text() and _layer("Dzialki").featureCount() == 3
+    finally:
+        srv.close()
+
+
+def test_separate_layer_option_names_each_download(dock):
+    dock.output.chk_separate.setChecked(True)
+    dock.sources.select_labels(["dzialki (EGIB)"])
+    dock.scope.tabs.setCurrentIndex(ScopeTab.IDS)
+    dock.scope.txt_ids.setPlainText("022602_1.0003.0")
+    for _ in range(2):
+        dock.start()
+        _wait(dock)
+    from qgis.core import QgsProject
+    names = sorted(l.name() for l in QgsProject.instance().mapLayers().values())
+    assert names == ["Dzialki_ID_1", "Dzialki_ID_2"]
+    dock.output.chk_separate.setChecked(False)

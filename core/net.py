@@ -5,6 +5,7 @@ HTTP dla całej wtyczki.
 Jedna sesja `requests` z ponawianiem. Jeśli w QGIS (Ustawienia → Opcje → Sieć)
 włączono serwer proxy, sesja go używa.
 """
+import re
 import time
 import urllib.parse
 
@@ -95,3 +96,43 @@ def get(session: requests.Session, url: str, params: dict = None,
                         f"(próba {attempt + 1}/{MAX_RETRIES})")
             time.sleep(wait)
     raise RuntimeError("Nieoczekiwany koniec pętli ponawiania")
+
+
+def friendly(exc: BaseException) -> str:
+    """
+    Komunikat błędu dla użytkownika: co się stało i co zrobić.
+    Pełna treść wyjątku zostaje w dzienniku.
+    """
+    text = str(exc)
+    proxy_hint = "sprawdź połączenie z internetem i proxy (QGIS: Ustawienia → Opcje → Sieć)"
+    if isinstance(exc, requests.exceptions.ProxyError) or "ProxyError" in text:
+        return "Serwer proxy odrzucił połączenie – sprawdź adres, port i hasło proxy " \
+               "(QGIS: Ustawienia → Opcje → Sieć)."
+    if isinstance(exc, requests.exceptions.SSLError) or "CERTIFICATE_VERIFY_FAILED" in text:
+        return "Błąd certyfikatu SSL serwera – sieć firmowa może podmieniać certyfikaty; " \
+               "skontaktuj się z administratorem sieci."
+    if isinstance(exc, requests.Timeout) or "timed out" in text.lower():
+        return "Serwer nie odpowiedział w wyznaczonym czasie – spróbuj mniejszego zakresu " \
+               "albo ponów później."
+    if isinstance(exc, requests.HTTPError) and exc.response is not None:
+        code = exc.response.status_code
+        if code == 429:
+            return "Serwer ogranicza liczbę zapytań (429) – odczekaj chwilę i ponów."
+        if code >= 500:
+            return f"Usługa jest chwilowo niedostępna (błąd serwera {code}) – ponów później."
+        if code in (401, 403):
+            return f"Serwer odmówił dostępu ({code}) – usługa może wymagać logowania."
+        if code == 404:
+            return "Nie znaleziono usługi pod tym adresem (404) – adres mógł się zmienić."
+        return f"Serwer odrzucił zapytanie (kod {code})."
+    m = re.search(r"too many (\d{3}) error", text)
+    if m:
+        code = int(m.group(1))
+        return (f"Usługa jest chwilowo niedostępna (błąd serwera {code}) – ponów później."
+                if code >= 500 else "Serwer ogranicza liczbę zapytań – odczekaj chwilę i ponów.")
+    if isinstance(exc, (requests.ConnectionError, ConnectionError)) or \
+            "Max retries exceeded" in text or "NameResolutionError" in text:
+        return f"Brak połączenia z serwerem – {proxy_hint}."
+    if text.startswith("Serwer zwrócił błąd"):
+        return text[:300]
+    return text[:200] or type(exc).__name__

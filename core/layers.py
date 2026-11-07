@@ -10,16 +10,21 @@ import os
 import zipfile
 from typing import Optional
 
+import re
+
 from qgis.core import (
-    QgsFeature, QgsField, QgsFields, QgsGeometry, QgsProject, QgsSettings,
-    QgsVectorFileWriter, QgsVectorLayer, QgsWkbTypes,
+    QgsAbstractMetadataBase, QgsFeature, QgsField, QgsFields, QgsGeometry, QgsProject,
+    QgsSettings, QgsVectorFileWriter, QgsVectorLayer, QgsWkbTypes,
 )
+from qgis.PyQt.QtCore import QDateTime
 
 from . import log
 from .catalog import Source
 from ..qt_compat import (
     FIELD_DOUBLE, FIELD_INT, FIELD_INTEGER_TYPES, FIELD_STRING, GEOM_LINE, GEOM_POLYGON,
 )
+
+GROUP_NAME = "GUGiK"
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 
@@ -80,16 +85,20 @@ def split_lines_polygons(features: list) -> dict:
 class Output:
     """Dokąd zapisywać wyniki: warstwy tymczasowe albo jeden plik GeoPackage."""
 
-    def __init__(self, gpkg_path: Optional[str] = None, load_style: bool = True):
+    def __init__(self, gpkg_path: Optional[str] = None, load_style: bool = True,
+                 separate: bool = False):
         self.gpkg_path = gpkg_path or None
         self.load_style = load_style
+        # True: każde pobranie do nowej warstwy (Dzialki_1465_1, _2…) zamiast dopisywania
+        self.separate = separate
 
     @classmethod
     def from_settings(cls, load_style: bool = True) -> "Output":
         s = QgsSettings()
+        separate = s.value(f"{SETTINGS_PREFIX}/separate_layers", False, type=bool)
         if s.value(f"{SETTINGS_PREFIX}/output_mode", "memory", type=str) == "gpkg":
-            return cls(s.value(f"{SETTINGS_PREFIX}/gpkg_path", "", type=str), load_style)
-        return cls(None, load_style)
+            return cls(s.value(f"{SETTINGS_PREFIX}/gpkg_path", "", type=str), load_style, separate)
+        return cls(None, load_style, separate)
 
 
 SETTINGS_PREFIX = "pobierz_dane_GUGiK"
@@ -200,11 +209,75 @@ def _gpkg_layer(path: str, name: str, geom_type: str, fields: QgsFields) -> QgsV
     return layer
 
 
+def add_to_project(layer, project: QgsProject = None) -> None:
+    """Dodaje warstwę do projektu, na górę grupy „GUGiK” (tworzy ją na górze drzewa)."""
+    project = project or QgsProject.instance()
+    project.addMapLayer(layer, False)
+    root = project.layerTreeRoot()
+    group = root.findGroup(GROUP_NAME)
+    if group is None:
+        group = root.insertGroup(0, GROUP_NAME)
+    group.insertLayer(0, layer)
+
+
+_PL = str.maketrans("ąćęłńóśźżĄĆĘŁŃÓŚŹŻ", "acelnoszzACELNOSZZ")
+
+
+def _safe(text: str) -> str:
+    """Fragment nazwy warstwy: litery, cyfry, podkreślenia."""
+    text = (text or "").translate(_PL)
+    return re.sub(r"[^0-9A-Za-z]+", "_", text).strip("_")[:30]
+
+
+def unique_name(base: str, tag: str = "", project: QgsProject = None,
+                gpkg_path: Optional[str] = None) -> str:
+    """Pierwsza wolna nazwa `base_tag_N` (N od 1) w projekcie i w pliku GPKG."""
+    project = project or QgsProject.instance()
+    stem = f"{base}_{_safe(tag)}" if _safe(tag) else base
+    taken = {l.name() for l in project.mapLayers().values()}
+    if gpkg_path and os.path.exists(gpkg_path):
+        probe = QgsVectorLayer(gpkg_path, "probe", "ogr")
+        if probe.isValid():
+            taken |= {sub.split("!!::!!")[1] for sub in probe.dataProvider().subLayers()
+                      if len(sub.split("!!::!!")) >= 2}
+    n = 1
+    while f"{stem}_{n}" in taken:
+        n += 1
+    return f"{stem}_{n}"
+
+
+def stamp(layer, info: Optional[dict], added: int) -> None:
+    """
+    Metadane warstwy: adres usługi, zakres i data każdego pobrania
+    (Właściwości warstwy → Metadane; historia rośnie przy dopisywaniu).
+    info: {'url', 'typename', 'scope'} – brakujące klucze są pomijane.
+    """
+    if not info or layer is None:
+        return
+    md = layer.metadata()
+    now = QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm")
+    url, typename, scope = info.get("url", ""), info.get("typename", ""), info.get("scope", "")
+    if not md.title():
+        md.setTitle(layer.name())
+    md.setAbstract("\n".join(x for x in (
+        "Dane pobrane wtyczką „Pobierz dane GUGiK”.",
+        f"Usługa: {url}" if url else "",
+        f"Warstwa usługi: {typename}" if typename else "",
+        f"Ostatnie pobranie: {now}" + (f", zakres: {scope}" if scope else ""),
+    ) if x))
+    md.addHistoryItem(f"{now} · {added} obiektów" + (f" · {scope}" if scope else "")
+                      + (f" · {url}" if url else ""))
+    if url and not any(l.url == url for l in md.links()):
+        link = QgsAbstractMetadataBase.Link("Usługa WFS", "OGC:WFS", url)
+        md.addLink(link)
+    layer.setMetadata(md)
+
+
 def write(features: list, layer_name: str, geom_type: str,
           unique_field: Optional[str] = None, style: Optional[str] = None,
           load_style: bool = True, project: QgsProject = None,
           numeric: Optional[dict] = None, fields: Optional[QgsFields] = None,
-          gpkg_path: Optional[str] = None) -> Optional[QgsVectorLayer]:
+          gpkg_path: Optional[str] = None, info: Optional[dict] = None) -> Optional[QgsVectorLayer]:
     """
     Dopisuje obiekty do warstwy `layer_name` (tworzy ją, gdy jej nie ma):
     tymczasowej albo w pliku `gpkg_path`.
@@ -213,6 +286,7 @@ def write(features: list, layer_name: str, geom_type: str,
     fields    – gotowy schemat (np. z dostawcy WFS); domyślnie z atrybutów, jako tekst
     numeric   – {pole: 'double'|'int'}: te pola dostają typ liczbowy, o ile każda
                 wartość w pierwszej porcji jest liczbą (inaczej zostają tekstem)
+    info      – opis pobrania do metadanych warstwy (patrz stamp)
     Obiekty o wartości `unique_field` już obecnej w warstwie są pomijane.
     Zwraca warstwę albo None, gdy nie było czego zapisać.
     """
@@ -237,7 +311,7 @@ def write(features: list, layer_name: str, geom_type: str,
             vl.updateFields()
         if load_style:
             apply_style(vl, style)
-        project.addMapLayer(vl)
+        add_to_project(vl, project)
 
     is_multi = QgsWkbTypes.isMultiType(vl.wkbType())
     layer_fields = vl.fields()
@@ -273,24 +347,34 @@ def write(features: list, layer_name: str, geom_type: str,
             log.warning(f"[Warstwa] {layer_name}: część obiektów odrzucona przez warstwę")
         vl.updateExtents()
         vl.triggerRepaint()
+    stamp(vl, info, len(out))
     return vl
 
 
-def write_source(features: list, source: Source, output: Optional[Output] = None) -> list:
-    """Zapis według opisu źródła z katalogu. Zwraca listę użytych warstw."""
+def write_source(features: list, source: Source, output: Optional[Output] = None,
+                 scope: str = "", tag: str = "") -> list:
+    """
+    Zapis według opisu źródła z katalogu. Zwraca listę użytych warstw.
+    scope – opis zakresu do metadanych; tag – fragment nazwy przy osobnych warstwach.
+    """
     output = output or Output()
+    info = {"url": source.url, "typename": source.typename, "scope": scope}
     common = dict(load_style=output.load_style, numeric=source.numeric_fields,
-                  gpkg_path=output.gpkg_path)
+                  gpkg_path=output.gpkg_path, info=info)
+
+    def name(base):
+        return unique_name(base, tag, gpkg_path=output.gpkg_path) if output.separate else base
+
     if source.split_lines_polygons:
         parts = split_lines_polygons(features)
         layers = [
-            write(parts["line"], f"{source.layer_name}_linie", "MultiLineString",
+            write(parts["line"], name(f"{source.layer_name}_linie"), "MultiLineString",
                   source.unique_field, source.style, **common),
-            write(parts["polygon"], f"{source.layer_name}_poligony", "MultiPolygon",
+            write(parts["polygon"], name(f"{source.layer_name}_poligony"), "MultiPolygon",
                   source.unique_field, "a08_ulice_poligony", **common),
         ]
         return [l for l in layers if l is not None]
-    layer = write(features, source.layer_name, source.geom_type,
+    layer = write(features, name(source.layer_name), source.geom_type,
                   source.unique_field, source.style, **common)
     return [layer] if layer is not None else []
 
@@ -310,7 +394,7 @@ def boundary_layer(geom: QgsGeometry, teryt: str, load_style: bool = True) -> Qg
     vl.updateExtents()
     if load_style:
         apply_style(vl, "prg.qml")
-    QgsProject.instance().addMapLayer(vl)
+    add_to_project(vl)
     return vl
 
 
@@ -366,7 +450,7 @@ def add_package(path: str, load_style: bool = True) -> list:
             continue
         if load_style:
             apply_style(vl, _style_for_file(name))
-        QgsProject.instance().addMapLayer(vl)
+        add_to_project(vl)
         added.append(vl)
         log.success(f"[Paczka] Dodano warstwę: {name}")
     return added

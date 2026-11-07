@@ -38,6 +38,7 @@ class Query:
 class DownloadResult:
     features: list = field(default_factory=list)
     errors: list = field(default_factory=list)   # [(etykieta zapytania, komunikat)]
+    failed: list = field(default_factory=list)   # zapytania (Query) do ponowienia
     canceled: bool = False
 
 
@@ -45,9 +46,11 @@ class WfsDownloadTask(QgsTask):
     """
     Pobiera obiekty jednego źródła dla listy zapytań, strona po stronie.
     Błąd jednego zapytania nie przerywa pozostałych; trafia do `result.errors`.
-    Sygnał `done(DownloadResult)` przychodzi w głównym wątku.
+    Sygnał `done(DownloadResult)` przychodzi w głównym wątku;
+    `count_changed(int)` – liczba pobranych obiektów w trakcie.
     """
     done = pyqtSignal(object)
+    count_changed = pyqtSignal(int)
 
     def __init__(self, source: Source, queries: list, attributes: Optional[list] = None,
                  expected: int = 0, description: str = ""):
@@ -70,7 +73,8 @@ class WfsDownloadTask(QgsTask):
             except Exception as exc:  # sieć, serwer, XML – zapisz i jedź dalej
                 label = query.label or f"zapytanie {qi + 1}/{n}"
                 log.warning(f"[Pobieranie] {self.source.label}, {label}: {exc}")
-                self.result.errors.append((label, str(exc)))
+                self.result.errors.append((label, net.friendly(exc)))
+                self.result.failed.append(query)
         self.setProgress(100)
         return not self.result.canceled
 
@@ -90,6 +94,7 @@ class WfsDownloadTask(QgsTask):
         return layers.clip(features, query.clip_geom)
 
     def _report(self, qi: int, n: int, done_in_query: int) -> None:
+        self.count_changed.emit(len(self.result.features) + done_in_query)
         if n > 1:
             self.setProgress(100.0 * (qi + 1) / n)
         elif self.expected > 0:
@@ -219,7 +224,7 @@ class SkorowidzSearchTask(QgsTask):
                 self.features.extend(gml.read_typed(self.client.download(self.filter_xml, name)))
             except Exception as exc:
                 log.warning(f"[Skorowidz] {name}: {exc}")
-                self.errors.append((name, str(exc)))
+                self.errors.append((name, net.friendly(exc)))
             self.setProgress(100.0 * (i + 1) / n)
         return True
 

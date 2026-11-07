@@ -8,7 +8,7 @@ qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 supportsQt6=True
 description=Wtyczka do pobierania obiektów z usługi zbiorczej WFS EGIB. Plugin for downloading features from the EGiB collective WFS service.
-version=1.9.3
+version=1.9.4
 author=Główny Urząd Geodezji i Kartografii (GUGiK) - Łukasz Świątek
 email=uslugi.iip@gugik.gov.pl
 
@@ -27,6 +27,15 @@ repository=https://github.com/GlownyUrzadGeodezjiIKartografii/pobierz_dane_GUGiK
 hasProcessingProvider=no
 # Uncomment the following line and add your changelog:
 changelog=
+	1.9.4
+		- wyniki w grupie „GUGiK” w drzewie warstw
+		- metadane warstwy (Właściwości → Metadane): adres usługi, zakres i historia pobrań z datą
+		- krok 3: opcja „Każde pobranie w osobnej warstwie” (np. Dzialki_1465_1, Dzialki_1465_2)
+		- zadania: liczba pobranych obiektów w trakcie; przycisk „Ponów” dla zapytań zakończonych błędem
+		- zrozumiałe komunikaty błędów sieci (limit czasu, błąd serwera, proxy, certyfikat) z podpowiedzią
+		- krok 2 → Mapa: przycisk „Wyczyść” kasuje narysowany prostokąt lub wielokąt
+		- EZiUDP: użytki gruntowe i kontury klasyfikacyjne EGiB (tam, gdzie powiat je udostępnia; brak warstwy nie jest błędem)
+		- EZiUDP: odczyt listy warstw z niepoprawnego XML GetCapabilities (np. ePODGiK) i pobieranie własnym klientem GML, gdy dostawca WFS QGIS odrzuci usługę
 	1.9.3
 		- poprawka: pobieranie według warstwy z obiektami wieloczęściowymi (MultiPolygon) kończyło się błędem; teraz brana jest każda część i wynik jest docinany do dokładnego kształtu
 		- krok 2 → Mapa: nowa opcja „Wielokąt” – rysowanie dowolnego kształtu (lewy klik dodaje wierzchołek, prawy klik / dwuklik / Enter kończy, Backspace cofa, Esc anuluje)

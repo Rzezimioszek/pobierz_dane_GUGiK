@@ -191,3 +191,59 @@ def test_spatial_bbox_for_points_and_flag():
     f = mod("filters")
     assert "<fes:BBOX>" in f.spatial("geom", "POINT(284000 366000)", use_bbox=False)
     assert "<fes:BBOX>" in f.spatial("geom", MULTI, use_bbox=True)
+
+
+# ---------------------------------------------------------------- czytelne wyniki
+
+def test_friendly_network_errors():
+    import requests
+    net = mod("net")
+    assert "proxy" in net.friendly(requests.exceptions.ProxyError("x")).lower()
+    assert "czasie" in net.friendly(requests.Timeout("read timed out"))
+    resp = requests.Response()
+    resp.status_code = 503
+    assert "503" in net.friendly(requests.HTTPError(response=resp))
+    retry = requests.exceptions.RetryError("Max retries exceeded (Caused by ResponseError("
+                                           "'too many 500 error responses'))")
+    assert "500" in net.friendly(retry) and "niedostępna" in net.friendly(retry)
+    assert "połączenia" in net.friendly(requests.ConnectionError("Max retries exceeded … "
+                                                                  "NameResolutionError"))
+
+
+def test_write_groups_layers_and_stamps_metadata():
+    from qgis.core import QgsProject
+    layers = mod("layers")
+    project = QgsProject()
+    info = {"url": "https://example.pl/wfs", "typename": "ms:dzialki", "scope": "TERYT 1465"}
+    vl = layers.write(_features(3), "Dzialki", "MultiPolygon", "ID_DZIALKI", project=project, info=info)
+    layers.write(_features(4), "Dzialki", "MultiPolygon", "ID_DZIALKI", project=project, info=info)
+    group = project.layerTreeRoot().findGroup("GUGiK")
+    assert group is not None and group.findLayer(vl.id()) is not None
+    md = vl.metadata()
+    assert "https://example.pl/wfs" in md.abstract() and "TERYT 1465" in md.abstract()
+    assert len(md.history()) == 2 and md.history()[0].split(" · ")[1] == "3 obiektów"
+    assert md.history()[1].split(" · ")[1] == "1 obiektów"
+    assert [l.url for l in md.links()] == ["https://example.pl/wfs"]
+
+
+def test_separate_layers_get_numbered_names():
+    from qgis.core import QgsProject
+    layers, catalog = mod("layers"), mod("catalog")
+    out = layers.Output(separate=True)
+    src = catalog.egib_dzialki()
+    first = layers.write_source(_features(2), src, out, scope="TERYT 1465", tag="1465")
+    second = layers.write_source(_features(2), src, out, scope="TERYT 1465", tag="1465")
+    try:
+        assert [l.name() for l in first + second] == ["Dzialki_1465_1", "Dzialki_1465_2"]
+        assert layers.unique_name("Dzialki", "obręb 12/3") == "Dzialki_obreb_12_3_1"
+    finally:
+        QgsProject.instance().removeMapLayers([l.id() for l in first + second])
+
+
+def test_task_reports_running_count(server):
+    tasks, filters = mod("tasks"), mod("filters")
+    task = tasks.WfsDownloadTask(_source(server.url), [filters.bbox("geom", 0, 0, 1, 1)])
+    seen = []
+    task.count_changed.connect(seen.append)
+    task.run()
+    assert seen == [1000, 1005]

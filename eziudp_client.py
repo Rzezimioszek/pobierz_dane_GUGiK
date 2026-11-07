@@ -76,7 +76,7 @@ ZBIOR_CONFIG: dict = {
         # Fragmenty nazwy zbioru w EZiUDP (gdy filtr „zbior” w API nic nie zwróci)
         "name_patterns": ["gruntów i budynków", "gruntow i budynkow", "egib"],
         "layer_patterns": [
-            "dzialki", "dzialka", "budynki", "punkty_graniczne"],
+            "dzialki", "dzialka", "budynki", "punkty_graniczne", "uzytki", "kontury"],
         "geom_field": "geom",
         "id_field": "id_dzialki",
     },
@@ -535,8 +535,18 @@ class EziudpClient:
                 if names:
                     break
         except ET.ParseError as exc:
+            # Część serwerów (np. MapServer w ePODGiK) wstawia nieescapowane „&”
+            # w adresach MetadataURL – XML jest wtedy niepoprawny. Nazwy warstw
+            # odczytujemy wtedy wprost z tekstu.
+            text = xml_bytes.decode("utf-8", errors="replace") \
+                if isinstance(xml_bytes, bytes) else str(xml_bytes)
+            for block in re.findall(r"<(?:\w+:)?FeatureType\b.*?</(?:\w+:)?FeatureType>", text, re.S):
+                m = re.search(r"<(?:\w+:)?Name>\s*([^<]+?)\s*</(?:\w+:)?Name>", block)
+                if m and m.group(1) not in names:
+                    names.append(m.group(1))
             QgsMessageLog.logMessage(
-                f"[EziudpClient] Błąd parsowania GetCapabilities XML: {exc}",
-                LOG_TAG, Qgis.MessageLevel.Warning,
+                f"[EziudpClient] GetCapabilities to niepoprawny XML ({exc}) – "
+                f"nazwy warstw odczytane z tekstu: {names}",
+                LOG_TAG, Qgis.MessageLevel.Info if names else Qgis.MessageLevel.Warning,
             )
         return names
