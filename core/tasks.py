@@ -18,6 +18,14 @@ from .catalog import Source
 from .wfs import PAGE_SIZE, WfsClient
 
 
+def _close(session) -> None:
+    """Zamyka sesję HTTP zadania (połączenia nie czekają na sprzątanie przez Pythona)."""
+    try:
+        session.close()
+    except Exception:
+        pass
+
+
 @dataclass
 class Query:
     """Jedno zapytanie: filtr FES i opcjonalna geometria do przycięcia wyników."""
@@ -88,6 +96,7 @@ class WfsDownloadTask(QgsTask):
             self.setProgress(min(99.0, 100.0 * done_in_query / self.expected))
 
     def finished(self, ok: bool) -> None:
+        _close(self.client.session)
         if self.isCanceled():
             self.result.canceled = True
         self.done.emit(self.result)
@@ -113,6 +122,7 @@ class HitsTask(QgsTask):
             return False
 
     def finished(self, ok: bool) -> None:
+        _close(self.client.session)
         self.done.emit(self.hits if ok else -2)
 
 
@@ -150,6 +160,7 @@ class FileDownloadTask(QgsTask):
             return False
 
     def finished(self, ok: bool) -> None:
+        _close(self.session)
         if ok:
             log.success(f"[Plik] Zapisano: {self.path}")
         elif self.isCanceled():
@@ -178,6 +189,7 @@ class BoundaryTask(QgsTask):
         return self.geometry is not None and not self.geometry.isEmpty()
 
     def finished(self, ok: bool) -> None:
+        _close(self.client.session)
         self.done.emit(self.geometry if ok else None)
 
 
@@ -212,4 +224,5 @@ class SkorowidzSearchTask(QgsTask):
         return True
 
     def finished(self, ok: bool) -> None:
+        _close(self.client.session)
         self.done.emit(self.features if ok else [], self.errors)

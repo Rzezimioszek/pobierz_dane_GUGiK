@@ -18,7 +18,7 @@ Użycie w EziudpWidget:
 import re
 
 from qgis.PyQt.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QComboBox, QCompleter,
 )
 from qgis.PyQt.QtCore import Qt, pyqtSignal

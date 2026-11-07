@@ -372,6 +372,7 @@ class ScopePicker(QWidget):
     changed = pyqtSignal()
     draw_requested = pyqtSignal()
     show_unit_requested = pyqtSignal(str)
+    submit = pyqtSignal()   # Enter w polu tekstowym – „pobierz, jeśli gotowe”
 
     TABS = ["teryt", "map", "layer", "ids", "obreb"]
 
@@ -395,6 +396,8 @@ class ScopePicker(QWidget):
             i = self.tabs.addTab(widget, title)
             self.tabs.setTabToolTip(i, tip)
         self.tabs.setCurrentIndex(QgsSettings().value(f"{SETTINGS}/scope_tab", 0, type=int))
+        for edit in self.findChildren(QLineEdit):
+            edit.returnPressed.connect(self.submit.emit)
         self.tabs.currentChanged.connect(self._tab_changed)
 
     def _tab_changed(self, i):

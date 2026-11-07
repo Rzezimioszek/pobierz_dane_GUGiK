@@ -19,20 +19,14 @@ import os
 from typing import Optional
 
 from qgis.core import (
-    QgsCoordinateReferenceSystem,
-    QgsCoordinateTransform,
     QgsGeometry,
     QgsMessageLog,
-    QgsProject,
     QgsSpatialIndex,
     QgsFeature,
-    QgsRectangle,
     Qgis,
 )
 
 LOG_TAG = "PD_GUGiK"
-_CRS_WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
-_CRS_2180 = QgsCoordinateReferenceSystem("EPSG:2180")
 
 
 class PowiatyIndex:
@@ -150,9 +144,6 @@ class PowiatyIndex:
             )
             return
 
-        transform = QgsCoordinateTransform(
-            _CRS_WGS84, _CRS_2180, QgsProject.instance()
-        )
         spatial_index = QgsSpatialIndex()
 
         fid = 0
@@ -175,18 +166,7 @@ class PowiatyIndex:
                 skipped += 1
                 continue
 
-            # Transformacja WGS84 → EPSG:2180
-            """
-            try:
-                geom.transform(transform)
-            except Exception as exc:
-                QgsMessageLog.logMessage(
-                    f"[PowiatyIndex] Transformacja TERYT {teryt}: {exc}",
-                    LOG_TAG, Qgis.MessageLevel.Warning,
-                )
-                skipped += 1
-                continue
-            """
+            # Plik index/powiaty.geojson jest już w EPSG:2180 – bez transformacji
 
             self._geometries[teryt] = geom
             self._names[teryt] = name

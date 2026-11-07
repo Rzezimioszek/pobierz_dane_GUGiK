@@ -227,3 +227,114 @@ def test_gpkg_without_path_blocks_download(dock):
     assert not dock.btn_download.isEnabled() and dock.output_box.property("state") == "todo"
     dock.output.rb_memory.setChecked(True)
     assert dock.btn_download.isEnabled()
+
+
+class _PluginIface(_Iface):
+    """Interfejs QGIS na potrzeby cyklu życia wtyczki (pasek, menu, panele)."""
+
+    def __init__(self):
+        super().__init__()
+        self.docks, self.menu_actions = [], []
+
+    def addToolBar(self, name):
+        return self._win.addToolBar(name)
+
+    def addPluginToVectorMenu(self, menu, action):
+        self.menu_actions.append(action)
+
+    def removePluginVectorMenu(self, menu, action):
+        self.menu_actions.remove(action)
+
+    def removeToolBarIcon(self, action):
+        pass
+
+    def addDockWidget(self, area, dock):
+        self._win.addDockWidget(area, dock)
+        self.docks.append(dock)
+
+    def removeDockWidget(self, dock):
+        self._win.removeDockWidget(dock)
+        self.docks.remove(dock)
+
+
+def test_unload_removes_everything_and_cancels_tasks():
+    from qgis.PyQt.QtWidgets import QToolBar
+    main = importlib.import_module(f"{PLUGIN_NAME}.pobierz_dane_GUGiK")
+    iface = _PluginIface()
+    plugin = main.PD_GUGiK(iface)
+    plugin.initGui()
+    plugin.run()
+    dock = plugin.dockwidget
+    assert iface.docks == [dock] and iface.menu_actions
+
+    class FakeTask:
+        canceled = False
+
+        def cancel(self):
+            self.canceled = True
+    t = FakeTask()
+    dock.running_tasks.append(t)
+    dock._start_draw()
+    tool = dock.map_tool
+    assert dock.canvas.mapTool() is tool
+
+    plugin.unload()
+    assert t.canceled and iface.docks == [] and iface.menu_actions == []
+    assert plugin.dockwidget is None and plugin.toolbar is None
+    assert dock.canvas.mapTool() is not tool
+    assert not [tb for tb in iface._win.findChildren(QToolBar) if tb.objectName() == "PobieranieGUGiK"
+                and tb.parent() is iface._win and tb.isVisible()]
+
+    # Ponowne wczytanie (jak przeładowanie wtyczki) – jeden panel, bez wyjątków
+    plugin2 = main.PD_GUGiK(iface)
+    plugin2.initGui()
+    plugin2.run()
+    assert len(iface.docks) == 1
+    plugin2.unload()
+
+
+def test_eziudp_gmina_boundary_in_background(dock, monkeypatch):
+    import threading
+    from qgis.core import QgsGeometry
+    prg = importlib.import_module(f"{PLUGIN_NAME}.prg_client")
+    ez = importlib.import_module(f"{PLUGIN_NAME}.eziudp_download_dialog")
+    threads = []
+
+    def boundary(self, teryt):
+        threads.append(threading.current_thread() is threading.main_thread())
+        return QgsGeometry.fromWkt("POLYGON((0 0, 10 0, 10 10, 0 10, 0 0))")
+    monkeypatch.setattr(prg.PRGClient, "get_boundary_geometry", boundary)
+    launched = []
+    monkeypatch.setattr(ez.EziudpWidget, "_launch",
+                        lambda self, keys, teryts, bbox, clip: launched.append((keys, teryts, bbox, clip)))
+
+    dock.sources.select_labels(["Usługi powiatowe (EZiUDP)"])
+    w = dock.eziudp
+    w.radio_teryt.setChecked(True)
+    w.teryt_scope.set_teryt("146501_1")
+    next(iter(w._layer_checks.values())).setChecked(True)
+    w._on_start()
+    assert not launched, "start powinien czekać na granicę"
+    from qgis.core import QgsApplication
+    t0 = time.time()
+    while not launched and time.time() - t0 < 10:
+        QgsApplication.processEvents()
+        time.sleep(0.02)
+    assert threads == [False], "granica musi iść poza wątkiem interfejsu"
+    keys, teryts, bbox, clip = launched[0]
+    assert teryts == ["1465"] and bbox and clip.startswith("Polygon")
+
+
+def test_enter_starts_only_when_ready(dock, monkeypatch):
+    started = []
+    monkeypatch.setattr(dock, "start", lambda: started.append(1))
+    dock.sources.select_labels(["dzialki (EGIB)"])
+    dock.scope.tabs.setCurrentIndex(ScopeTab.OBREB)
+    dock.scope.txt_obreb.setText("")
+    dock.scope.txt_nr.returnPressed.emit()
+    assert started == []
+    name = next(n for n, ts in dock.units.obreby_by_name.items() if len(ts) == 1)
+    dock.scope.txt_obreb.setText(name)
+    dock.scope.txt_nr.setText("5")
+    dock.scope.txt_nr.returnPressed.emit()
+    assert started == [1]

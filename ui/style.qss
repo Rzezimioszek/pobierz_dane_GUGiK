@@ -47,6 +47,28 @@ QLabel#stepSummary {
     color: palette(mid);
 }
 
+/* ------------------------------------------------------------ grupy (okno EZiUDP, okno skorowidza)
+   Ten sam wygląd co karty kroków, żeby wszystkie części panelu były spójne. */
+
+QGroupBox {
+    background: palette(base);
+    border: 1px solid palette(midlight);
+    border-radius: 8px;
+    margin-top: 14px;
+    padding: 10px 8px 8px 8px;
+    font-weight: 600;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 10px;
+    padding: 0px 4px;
+}
+QGroupBox QCheckBox, QGroupBox QRadioButton, QGroupBox QLabel, QGroupBox QComboBox,
+QGroupBox QLineEdit, QGroupBox QPushButton {
+    font-weight: normal;
+}
+
 /* ------------------------------------------------------------ pola i listy */
 
 QLineEdit, QPlainTextEdit {

@@ -21,7 +21,7 @@ Pobieranie danych GUGiK
  *                                                                         *
  ***************************************************************************/
 """
-from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, Qt
+from qgis.PyQt.QtCore import QCoreApplication, QLocale, QSettings, Qt, QTranslator
 from qgis.PyQt.QtGui import QIcon
 from .qt_compat import QAction
 
@@ -49,7 +49,9 @@ class PD_GUGiK:
         self.plugin_dir = os.path.dirname(__file__)
 
         # initialize locale
-        locale = QSettings().value('locale/userLocale')[0:2]
+        # Język z ustawień QGIS; gdy wpisu brak (świeży profil) – język systemu
+        locale = (QSettings().value('locale/userLocale', '', type=str)
+                  or QLocale().name())[0:2]
         locale_path = os.path.join(
             self.plugin_dir,
             'i18n',
@@ -181,7 +183,10 @@ class PD_GUGiK:
         #print "** CLOSING PD_GUGiK"
 
         # disconnects
-        self.dockwidget.closingPlugin.disconnect(self.onClosePlugin)
+        try:
+            self.dockwidget.closingPlugin.disconnect(self.onClosePlugin)
+        except (TypeError, RuntimeError):
+            pass
 
         # remove this statement if dockwidget is to remain
         # for reuse if plugin is reopened
@@ -193,17 +198,31 @@ class PD_GUGiK:
 
 
     def unload(self):
-        """Removes the plugin menu item and icon from QGIS GUI."""
-
-        #print "** UNLOAD PD_GUGiK"
-
+        """
+        Wyłączenie/przeładowanie wtyczki: usuwa menu, pasek narzędzi i panel,
+        przerywa trwające pobierania. Bez tego panel zostawał w QGIS.
+        """
         for action in self.actions:
-            self.iface.removePluginVectorMenu(
-                self.tr(u'&Pobierz dane GUGiK'),
-                action)
+            self.iface.removePluginVectorMenu(self.menu, action)
             self.iface.removeToolBarIcon(action)
-        # remove the toolbar
-        del self.toolbar
+        self.actions = []
+
+        if self.dockwidget is not None:
+            try:
+                self.dockwidget.closingPlugin.disconnect(self.onClosePlugin)
+            except (TypeError, RuntimeError):
+                pass
+            self.dockwidget.shutdown()
+            self.iface.removeDockWidget(self.dockwidget)
+            self.dockwidget.setParent(None)
+            self.dockwidget.deleteLater()
+            self.dockwidget = None
+        self.pluginIsActive = False
+
+        if self.toolbar is not None:
+            self.iface.mainWindow().removeToolBar(self.toolbar)
+            self.toolbar.deleteLater()
+            self.toolbar = None
 
     #--------------------------------------------------------------------------
 

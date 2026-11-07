@@ -12,11 +12,10 @@ from .teryt_scope_widget import TerytScopeWidget
 
 from qgis.PyQt.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QLabel, QLineEdit, QPushButton,
+    QLabel, QPushButton,
     QTextEdit, QProgressBar, QGroupBox, QRadioButton,
-    QButtonGroup, QMessageBox, QSizePolicy, QCheckBox, QScrollArea,
+    QButtonGroup, QMessageBox, QSizePolicy, QCheckBox,
 )
-from qgis.PyQt.QtCore import Qt
 from qgis.core import (
     QgsProject, QgsGeometry, QgsApplication,
     QgsCoordinateReferenceSystem, QgsCoordinateTransform,
@@ -24,11 +23,6 @@ from qgis.core import (
 )
 from qgis.gui import QgsMapLayerComboBox
 from .qt_compat import LAYER_FILTER_POLYGON
-
-try:
-    from qgis.core import QgsMapLayerProxyModel
-except ImportError:
-    from qgis.gui import QgsMapLayerProxyModel  # type: ignore[no-redef]
 
 from .eziudp_wfs_task import (
        EziudpWfsTask as EziudpDownloadTask, EziudpWfsReport as EziudpDownloadReport,
@@ -44,6 +38,7 @@ class EziudpWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._task: EziudpDownloadTask = None
+        self._boundary_task = None
         self._layer_checks: dict = {}   # key → QCheckBox
         self._setup_ui()
 
@@ -115,6 +110,7 @@ class EziudpWidget(QWidget):
         # --- Przyciski ---
         row_btn = QHBoxLayout()
         self.btn_start = QPushButton("Pobierz dane")
+        self.btn_start.setObjectName("primary")
         self.btn_cancel = QPushButton("Przerwij")
         self.btn_cancel.setEnabled(False)
         row_btn.addWidget(self.btn_start)
@@ -178,6 +174,13 @@ class EziudpWidget(QWidget):
             QMessageBox.warning(self, "Brak wyboru", "Zaznacz co najmniej jedną warstwę.")
             return
 
+        # Gmina / obręb: granica z PRG w tle, potem start pobierania
+        if self.radio_teryt.isChecked():
+            raw = self.teryt_scope.get_resolved_teryt()
+            if raw and len(raw) >= 6:
+                self._start_with_boundary(raw, layer_keys)
+                return
+
         teryt_list, bbox_wkt, clip_geom_wkt, err = self._resolve_scope()
         if err:
             QMessageBox.warning(self, "Błąd zakresu", err)
@@ -189,6 +192,30 @@ class EziudpWidget(QWidget):
             )
             return
 
+        self._launch(layer_keys, teryt_list, bbox_wkt, clip_geom_wkt)
+
+    def _start_with_boundary(self, teryt: str, layer_keys: list):
+        """Granica gminy/obrębu z PRG w tle; zakres zapytania to jej otoczka albo BBOX."""
+        from .core.tasks import BoundaryTask
+        self._log(f"Pobieranie granicy PRG dla {teryt}…")
+        self.btn_start.setEnabled(False)
+        task = BoundaryTask(teryt)
+        self._boundary_task = task   # referencja do końca zadania
+
+        def done(geom):
+            self._boundary_task = None
+            self.btn_start.setEnabled(True)
+            if geom is None:
+                # Bez granicy: cały powiat, jak dotychczas
+                self._log("Nie pobrano granicy – pobieranie dla całego powiatu.")
+                self._launch(layer_keys, [teryt[:4]], None, None)
+                return
+            clip, bbox_wkt = self._query_area(teryt, geom)
+            self._launch(layer_keys, [teryt[:4]], bbox_wkt, clip.asWkt())
+        task.done.connect(done)
+        QgsApplication.taskManager().addTask(task)
+
+    def _launch(self, layer_keys, teryt_list, bbox_wkt, clip_geom_wkt):
         labels = [AVAILABLE_LAYERS[i]["label"]
                   for i, e in enumerate(AVAILABLE_LAYERS) if e["key"] in layer_keys]
         self._log(
@@ -238,15 +265,19 @@ class EziudpWidget(QWidget):
         self.btn_cancel.setEnabled(False)
         self._log("\n" + report.format_summary())
 
+        dock = self._dock()
         if report.total_features == 0:
-            QMessageBox.warning(self, "Brak danych",
-                                "Nie pobrano żadnych obiektów.\nSprawdź dziennik.")
+            text, level = "EZiUDP: nie pobrano żadnych obiektów – szczegóły w dzienniku poniżej.", \
+                Qgis.MessageLevel.Warning
         else:
-            QMessageBox.information(
-                self, "Zakończono",
-                f"Pobrano {report.total_features} obiektów "
-                f"z {report.successful}/{report.total_teryts} powiatów.",
-            )
+            text, level = (f"EZiUDP: pobrano {report.total_features} obiektów z "
+                           f"{report.successful}/{report.total_teryts} powiatów."), Qgis.MessageLevel.Success
+        if dock is not None and hasattr(dock, "notify"):
+            dock.notify(text, level)
+        elif report.total_features == 0:
+            QMessageBox.warning(self, "Brak danych", text)
+        else:
+            QMessageBox.information(self, "Zakończono", text)
 
     # ------------------------------------------------------------------
     # Wyznaczanie zakresu
@@ -269,12 +300,8 @@ class EziudpWidget(QWidget):
                     return [], None, None, f"Nie znaleziono powiatów dla województwa '{raw}'."
                 return tlist, None, None, None
 
-            if len(raw) >= 6:
-                powiat = raw[:4]
-                clip_geom ,bbox_wkt = self._geom_for_teryt(raw)
-                if clip_geom is None:
-                    return [powiat], None, None, None
-                return [powiat], bbox_wkt, clip_geom.asWkt(), None
+            if len(raw) >= 6:   # granica pobierana w tle (_start_with_boundary)
+                return [raw[:4]], None, None, None
 
             return [], None, None, f"Nie można rozwinąć kodu TERYT: '{raw}'."
 
@@ -312,52 +339,23 @@ class EziudpWidget(QWidget):
 
         return [], None, None, "Wybierz metodę wyznaczania zakresu."
 
-    def _geom_for_teryt(self, teryt: str):
-        dock = self._dock()
-        prg = getattr(dock, "prg_client", None)
-        if prg is None:
-            return None, None
-        try:
-            geom = prg.get_boundary_geometry(teryt)
+    @staticmethod
+    def _query_area(teryt: str, geom):
+        """(geometria do przycięcia, WKT zakresu zapytania): otoczka wypukła, gdy ma
+        do 200 wierzchołków, inaczej prostokąt otaczający."""
+        hull = geom.convexHull()
+        if hull and not hull.isEmpty() and hull.constGet().nCoordinates() <= 200:
+            QgsMessageLog.logMessage(f"[EziudpWidget] {teryt}: zakres = otoczka wypukła",
+                                     LOG_TAG, Qgis.MessageLevel.Info)
+            return geom, hull.asWkt()
+        QgsMessageLog.logMessage(f"[EziudpWidget] {teryt}: zakres = prostokąt",
+                                 LOG_TAG, Qgis.MessageLevel.Info)
+        return geom, geom.boundingBox().asWktPolygon()
 
-            convex_hull = geom.convexHull()
-            if convex_hull and not convex_hull.isEmpty():
-                hull_coords = convex_hull.constGet().nCoordinates()
-                if hull_coords <= 200:
-                    QgsMessageLog.logMessage(
-                    f"[EziudpWidget] Trying {teryt}: convex hull",
-                    LOG_TAG, Qgis.MessageLevel.Warning,
-                    )
-                    return geom, convex_hull.asWkt()
-                
-            if geom and not geom.isEmpty():
-                QgsMessageLog.logMessage(
-                    f"[EziudpWidget] Trying {teryt}: bbox",
-                    LOG_TAG, Qgis.MessageLevel.Warning,
-                    )
-                return geom, geom.boundingBox().asWktPolygon()
-        except Exception as exc:
-            QgsMessageLog.logMessage(
-                f"[EziudpWidget] PRG błąd dla TERYT {teryt}: {exc}",
-                LOG_TAG, Qgis.MessageLevel.Warning,
-            )
-        return None, None
-    
     def _get_powiaty_index(self):
         """Zwraca PowiatyIndex (singleton) lub None gdy brak plugin_dir."""
-        dock = self._dock()
-        plugin_dir = ""
-        """if dock:
-            try:
-                import inspect
-                plugin_dir = os.path.dirname(inspect.getfile(type(dock)))
-            except Exception:
-                pass
-        if not plugin_dir:
-            return None
-        """
         plugin_dir = os.path.dirname(__file__)
-        
+
         from .powiaty_index import PowiatyIndex
         return PowiatyIndex.instance(plugin_dir)
 

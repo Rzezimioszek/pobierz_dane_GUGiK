@@ -8,7 +8,7 @@ qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 supportsQt6=True
 description=Wtyczka do pobierania obiektów z usługi zbiorczej WFS EGIB. Plugin for downloading features from the EGiB collective WFS service.
-version=1.9.1
+version=1.9.2
 author=Główny Urząd Geodezji i Kartografii (GUGiK) - Łukasz Świątek
 email=uslugi.iip@gugik.gov.pl
 
@@ -27,6 +27,14 @@ repository=https://github.com/GlownyUrzadGeodezjiIKartografii/pobierz_dane_GUGiK
 hasProcessingProvider=no
 # Uncomment the following line and add your changelog:
 changelog=
+	1.9.2
+		- wyłączenie lub przeładowanie wtyczki usuwa panel i pasek narzędzi, przerywa trwające pobierania i zwalnia narzędzie mapy
+		- wtyczka startuje także w profilu QGIS bez ustawionego języka
+		- okno EZiUDP: granica gminy/obrębu pobierana w tle; wygląd spójny z panelem; wynik na pasku komunikatów zamiast okienka
+		- Enter w polach kroku 2 uruchamia pobieranie, gdy wybór jest kompletny
+		- połączenia HTTP zamykane po każdym zadaniu
+		- okno wyników skorowidza: podpowiedź o sortowaniu i filtrowaniu; usunięty zdublowany kod
+		- narzędzie tools/zapisz_probki.py zapisuje prawdziwe odpowiedzi usług do testów
 	1.9.1
 		- EZiUDP: adresy usług z oficjalnego API JSON (api.php); strona HTML zostaje jako zapas
 		- nowy wygląd panelu (arkusz stylów ui/style.qss): karty kroków ze stanem, wyróżniony przycisk Pobierz, czytelna lista zadań; działa w jasnym i ciemnym motywie

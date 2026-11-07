@@ -137,15 +137,57 @@ class PD_GUGiKDock(QDockWidget):
         self.scope.changed.connect(self._validate)
         self.output.changed.connect(self._validate)
         self.scope.draw_requested.connect(self._start_draw)
+        self.scope.submit.connect(self._submit)
         self.scope.show_unit_requested.connect(self._show_unit)
         if self.canvas is not None:
-            self.canvas.selectionChanged.connect(lambda *_: self._validate())
+            self.canvas.selectionChanged.connect(self._on_selection_changed)
+
+    def _submit(self) -> None:
+        """Enter w kroku 2: pobiera, gdy wybór jest kompletny (inaczej nic nie robi)."""
+        if self.btn_download.isEnabled() and not self.btn_download.isHidden():
+            self.start()
+
+    def _on_selection_changed(self, *_):
+        self._validate()
 
     def closeEvent(self, event):
         self._stop_draw()
         self.band.reset(GEOM_POLYGON)
         self.closingPlugin.emit()
         event.accept()
+
+    def shutdown(self) -> None:
+        """
+        Sprzątanie przy wyłączeniu/przeładowaniu wtyczki: przerywa zadania,
+        zwalnia narzędzie mapy i podświetlenie, odłącza sygnały mapy.
+        Po tym panel można bezpiecznie usunąć.
+        """
+        for task in list(self.running_tasks):
+            try:
+                task.cancel()
+            except RuntimeError:  # zadanie już usunięte przez QGIS
+                pass
+        self.running_tasks.clear()
+        self._raster_queue = []
+        for attr in ("_task", "_boundary_task"):
+            t = getattr(self.eziudp, attr, None)
+            if t is not None:
+                try:
+                    t.cancel()
+                except RuntimeError:
+                    pass
+        self._stop_draw()
+        if self.map_tool is not None:
+            self.map_tool.band.reset(GEOM_POLYGON)
+            self.canvas.scene().removeItem(self.map_tool.band)
+            self.map_tool = None
+        self.band.reset(GEOM_POLYGON)
+        self.canvas.scene().removeItem(self.band)
+        if self.canvas is not None:
+            try:
+                self.canvas.selectionChanged.disconnect(self._on_selection_changed)
+            except (TypeError, RuntimeError):
+                pass
 
     # ================================================================== komunikaty
 

@@ -13,7 +13,7 @@ Struktura wpisu:
     year_range  – (rok_od, rok_do) zakres comboboxa, None = brak filtra roku
     year_step   – krok iteracji lat (domyślnie -1 = malejąco)
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Tuple
 
 @dataclass(frozen=True)

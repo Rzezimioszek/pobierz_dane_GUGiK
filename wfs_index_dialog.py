@@ -5,7 +5,7 @@ from qgis.PyQt.QtWidgets import (
     QWidget, QLabel,
 )
 from qgis.PyQt.QtCore import Qt, QPoint
-from qgis.PyQt.QtGui import QColor, QIcon, QFont
+from qgis.PyQt.QtGui import QColor
 from .qt_compat import QAction
 from qgis.core import QgsVectorLayer, QgsProject, QgsFeature
 
@@ -81,73 +81,6 @@ class WfsIndexResultsDialog(QDialog):
         symbol.symbolLayer(0).setStrokeWidth(0.8)
 
     # ------------------------------------------------------------------
-    # UI
-    # ------------------------------------------------------------------
-
-    def _setup_ui(self):
-        layout = QVBoxLayout(self)
-
-        # Tryb wczytywania
-        mode_group = QGroupBox("Opcje wczytywania")
-        mode_layout = QHBoxLayout()
-        self.radio_vsicurl = QRadioButton("Wczytaj jako strumień w locie (/vsicurl/) – oszczędza dysk")
-        self.radio_download = QRadioButton("Pobierz fizycznie pliki na dysk")
-        self.radio_download.setChecked(True)
-        mode_layout.addWidget(self.radio_download)
-        mode_group.setLayout(mode_layout)
-        layout.addWidget(mode_group)
-
-        # Pasek zaznaczenia + info o filtrach
-        sel_layout = QHBoxLayout()
-        self.btn_sel_all   = QPushButton("Zaznacz wszystko")
-        self.btn_desel_all = QPushButton("Odznacz wszystko")
-        self.btn_inv_sel   = QPushButton("Odwróć zaznaczenie")
-        self.btn_clear_filters = QPushButton("Wyczyść filtry")
-        self.btn_clear_filters.setEnabled(False)
-        self.lbl_tip = QLabel("Kliknij na kolumne aby po sortować, kliknij prawym, aby filtrować")
-
-        self.lbl_status = QLabel("")
-        self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-
-        sel_layout.addWidget(self.btn_sel_all)
-        sel_layout.addWidget(self.btn_desel_all)
-        sel_layout.addWidget(self.btn_inv_sel)
-        sel_layout.addWidget(self.btn_clear_filters)
-        sel_layout.addWidget(self.lbl_tip)
-        sel_layout.addStretch()
-        sel_layout.addWidget(self.lbl_status)
-        layout.addLayout(sel_layout)
-
-        # Tabela
-        self.table = QTableWidget()
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSortingEnabled(False)   # sortujemy ręcznie
-        hh = self.table.horizontalHeader()
-        hh.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionsClickable(True)
-        hh.sectionClicked.connect(self._on_header_clicked)
-        layout.addWidget(self.table)
-
-        # Przyciski dolne
-        btn_layout = QHBoxLayout()
-        self.btn_download = QPushButton("Dodaj wybrane do mapy")
-        self.btn_cancel   = QPushButton("Anuluj")
-        btn_layout.addStretch()
-        btn_layout.addWidget(self.btn_cancel)
-        btn_layout.addWidget(self.btn_download)
-        layout.addLayout(btn_layout)
-
-        # Sygnały
-        self.btn_download.clicked.connect(self.accept_selection)
-        self.btn_cancel.clicked.connect(self.reject)
-        self.table.itemChanged.connect(self._on_item_changed)
-
-        self.btn_sel_all.clicked.connect(self._select_all)
-        self.btn_desel_all.clicked.connect(self._deselect_all)
-        self.btn_inv_sel.clicked.connect(self._invert_selection)
-        self.btn_clear_filters.clicked.connect(self._clear_all_filters)
-
-    # ------------------------------------------------------------------
     # Wypełnianie tabeli (jednorazowe – tylko surowe dane)
     # ------------------------------------------------------------------
 
@@ -217,24 +150,6 @@ class WfsIndexResultsDialog(QDialog):
     # ------------------------------------------------------------------
     # Sortowanie i widoczność wierszy
     # ------------------------------------------------------------------
-
-    def _on_header_clicked(self, logical_col: int):
-        if logical_col == _COL_CHK:
-            return
-
-        fs = self._filter_state
-        if fs.sort_col == logical_col:
-            if fs.sort_asc:
-                fs.sort_asc = False
-            else:
-                # Trzecie kliknięcie – usuwa sortowanie
-                fs.sort_col = -1
-                fs.sort_asc = True
-        else:
-            fs.sort_col = logical_col
-            fs.sort_asc = True
-
-        self._apply_filters_and_sort()
 
     def _apply_filters_and_sort(self):
         """
@@ -341,7 +256,7 @@ class WfsIndexResultsDialog(QDialog):
     # Dropdown filtrowania
     # ------------------------------------------------------------------
 
-    def _on_header_clicked(self, logical_col: int):  # noqa: F811 – override
+    def _on_header_clicked(self, logical_col: int):
         """
         Klik lewym: sortowanie.
         Klik z Ctrl / klik prawym: filtrowanie (dropdown).
@@ -474,11 +389,6 @@ class WfsIndexResultsDialog(QDialog):
     # Kontekstowe menu nagłówka (prawy klik → filtr)
     # ------------------------------------------------------------------
 
-    def _setup_header_context_menu(self):
-        hh = self.table.horizontalHeader()
-        hh.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        hh.customContextMenuRequested.connect(self._on_header_context_menu)
-
     def _on_header_context_menu(self, pos: QPoint):
         col = self.table.horizontalHeader().logicalIndexAt(pos)
         if col > _COL_CHK:
@@ -605,7 +515,7 @@ class WfsIndexResultsDialog(QDialog):
         super().closeEvent(event)
 
     # ------------------------------------------------------------------
-    # Inicjalizacja menu kontekstowego (wywołana po setup_ui)
+    # UI (okno, tabela, menu filtra pod prawym przyciskiem nagłówka)
     # ------------------------------------------------------------------
 
     def _setup_ui(self):
@@ -638,6 +548,9 @@ class WfsIndexResultsDialog(QDialog):
         sel_layout.addStretch()
         sel_layout.addWidget(self.lbl_status)
         layout.addLayout(sel_layout)
+        tip = QLabel("Kliknij nagłówek, aby sortować; prawym przyciskiem (albo z Ctrl), aby filtrować.")
+        tip.setObjectName("hint")
+        layout.addWidget(tip)
 
         self.table = QTableWidget()
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
