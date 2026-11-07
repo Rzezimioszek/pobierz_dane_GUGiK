@@ -13,6 +13,7 @@ Struktura wpisu:
     year_range  – (rok_od, rok_do) zakres comboboxa, None = brak filtra roku
     year_step   – krok iteracji lat (domyślnie -1 = malejąco)
 """
+import datetime
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -25,6 +26,10 @@ class SkorowidzService:
     layer_suffix: str = ""        # np. "" lub "_KRON86" – dopisywane po roku
 
 
+# Najnowszy rocznik = bieżący rok (usługi dodają nowe warstwy w ciągu roku;
+# brak warstwy dla danego roku jest zgłaszany jako ostrzeżenie, nie błąd).
+CURRENT_YEAR = datetime.date.today().year
+
 # -----------------------------------------------------------------------
 # REJESTR – dodaj nowy wpis tutaj
 # -----------------------------------------------------------------------
@@ -34,7 +39,7 @@ SKOROWIDZ_SERVICES: list[SkorowidzService] = [
         label="ortofotomapa",
         url="https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WFS/Skorowidze",
         layer_name="gugik:SkorowidzOrtofomapy",
-        year_range=(2025, 1995),
+        year_range=(CURRENT_YEAR, 1995),
     ),
 
     SkorowidzService(
@@ -48,7 +53,7 @@ SKOROWIDZ_SERVICES: list[SkorowidzService] = [
     #     label="zdjęcia lotnicze – środki rzutów (ZDJ)",
     #     url="https://mapy.geoportal.gov.pl/wss/service/PZGIK/ZDJ/WFS/Skorowidze_Srodki_Rzutow_Zdjec",
     #     layer_name="gugik:SkorowidzZdjecLotniczych",
-    #     year_range=(2025, 2000),
+    #     year_range=(CURRENT_YEAR, 2000),
     # ),
 
     SkorowidzService(
@@ -62,7 +67,7 @@ SKOROWIDZ_SERVICES: list[SkorowidzService] = [
         label="LIDAR EVRF2007",
         url="https://mapy.geoportal.gov.pl/wss/service/PZGIK/DanePomiaroweLidarEVRF2007/WFS/Skorowidze",
         layer_name="gugik:SkorowidzDanychPomiarowychLIDAR",
-        year_range=(2025, 2018),
+        year_range=(CURRENT_YEAR, 2018),
     ),
 
     SkorowidzService(
@@ -76,7 +81,7 @@ SKOROWIDZ_SERVICES: list[SkorowidzService] = [
         label="NMT EVRF2007",
         url="https://mapy.geoportal.gov.pl/wss/service/PZGIK/NumerycznyModelTerenuEVRF2007/WFS/Skorowidze",
         layer_name="gugik:SkorowidzNMT",
-        year_range=(2025, 2018),
+        year_range=(CURRENT_YEAR, 2018),
     ),
 
     SkorowidzService(
@@ -90,7 +95,7 @@ SKOROWIDZ_SERVICES: list[SkorowidzService] = [
         label="NMPT EVRF2007",
         url="https://mapy.geoportal.gov.pl/wss/service/PZGIK/NumerycznyModelPokryciaTerenuEVRF2007/WFS/Skorowidze",
         layer_name="gugik:SkorowidzNMPT",
-        year_range=(2025, 2019),
+        year_range=(CURRENT_YEAR, 2019),
     ),
 
     # SkorowidzService(

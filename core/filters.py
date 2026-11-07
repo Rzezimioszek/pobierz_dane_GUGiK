@@ -12,10 +12,10 @@ try:
 except ImportError:
     from xml.etree import ElementTree as ET  # nosec – parsujemy tylko własne filtry
 
-from qgis.core import QgsGeometry
+from qgis.core import QgsGeometry, QgsWkbTypes
 
 from . import log
-from ..qt_compat import WKB_POLYGON, WKB_MULTIPOLYGON
+from ..qt_compat import GEOM_POLYGON
 
 FES = 'xmlns:fes="http://www.opengis.net/fes/2.0"'
 GML = 'xmlns:gml="http://www.opengis.net/gml/3.2"'
@@ -38,35 +38,54 @@ def bbox(geom_field: str, xmin: float, ymin: float, xmax: float, ymax: float) ->
     )
 
 
+def _polygon_parts(geom: QgsGeometry) -> list:
+    """Zewnętrzne pierścienie wszystkich części poligonu (krzywe zamienione na odcinki)."""
+    if QgsWkbTypes.isCurvedType(geom.wkbType()):
+        geom = QgsGeometry(geom.constGet().segmentize())
+    parts = geom.asGeometryCollection() if geom.isMultipart() else [geom]
+    rings = []
+    for part in parts:
+        if part.isEmpty() or QgsWkbTypes.geometryType(part.wkbType()) != GEOM_POLYGON:
+            continue
+        poly = part.asPolygon()
+        if poly and poly[0]:
+            rings.append(poly[0])
+    return rings
+
+
+def _intersects(geom_field: str, ring: list, n: int) -> str:
+    coords = [f"{pt.y()} {pt.x()}" for pt in ring]
+    if coords[0] != coords[-1]:
+        coords.append(coords[0])
+    return (
+        f"<fes:Intersects><fes:ValueReference>{geom_field}</fes:ValueReference>"
+        f'<gml:Polygon gml:id="polygon_filter_{n}" srsName="EPSG:2180">'
+        f"<gml:exterior><gml:LinearRing>"
+        f'<gml:posList srsDimension="2">{" ".join(coords)}</gml:posList>'
+        f"</gml:LinearRing></gml:exterior></gml:Polygon></fes:Intersects>"
+    )
+
+
 def spatial(geom_field: str, wkt: str, use_bbox: bool = True) -> str:
-    """BBOX albo dokładne Intersects (zewnętrzny pierścień pierwszego poligonu)."""
+    """
+    BBOX albo Intersects z poligonem. Poligon wieloczęściowy = osobne Intersects
+    dla każdej części połączone przez Or (żadna część nie jest pomijana).
+    Dziury w poligonach nie trafiają do zapytania – dokładne przycięcie robi
+    zadanie pobierania (Query.clip_geom).
+    """
     geom = QgsGeometry.fromWkt(wkt)
-    if geom is None or geom.isEmpty():
+    if geom is None or geom.isNull() or geom.isEmpty():
         raise ValueError(f"Nieprawidłowa geometria WKT: {wkt[:80]}")
 
     rect = geom.boundingBox()
-    if use_bbox or geom.wkbType() not in (WKB_POLYGON, WKB_MULTIPOLYGON):
+    rings = [] if use_bbox or QgsWkbTypes.geometryType(geom.wkbType()) != GEOM_POLYGON \
+        else _polygon_parts(geom)
+    if not rings:
         return bbox(geom_field, rect.xMinimum(), rect.yMinimum(),
                     rect.xMaximum(), rect.yMaximum())
-
-    poly = geom.asPolygon()
-    if not poly:
-        polys = geom.asMultiPolygon()
-        poly = polys[0] if polys else None
-    if not poly:
-        raise ValueError("Nie można wyciągnąć zewnętrznego pierścienia poligonu.")
-
-    coords = [f"{pt.y()} {pt.x()}" for pt in poly[0]]
-    if coords[0] != coords[-1]:
-        coords.append(coords[0])
-    return _wrap(
-        f"<fes:Intersects><fes:ValueReference>{geom_field}</fes:ValueReference>"
-        f'<gml:Polygon gml:id="polygon_filter" srsName="EPSG:2180">'
-        f"<gml:exterior><gml:LinearRing>"
-        f'<gml:posList srsDimension="2">{" ".join(coords)}</gml:posList>'
-        f"</gml:LinearRing></gml:exterior></gml:Polygon></fes:Intersects>",
-        with_gml=True,
-    )
+    conditions = [_intersects(geom_field, ring, i + 1) for i, ring in enumerate(rings)]
+    inner = conditions[0] if len(conditions) == 1 else "<fes:Or>" + "".join(conditions) + "</fes:Or>"
+    return _wrap(inner, with_gml=True)
 
 
 def ids(id_field: str, values: list) -> str:

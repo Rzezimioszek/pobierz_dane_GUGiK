@@ -5,6 +5,7 @@ warstwą, praca sieciowa idzie przez zadania w tle (udawany serwer WFS),
 a przycisk Pobierz jest aktywny tylko przy pełnym wyborze.
 """
 import dataclasses
+import datetime
 import importlib
 import os
 import time
@@ -60,7 +61,7 @@ def _wait(dock, timeout=30):
 
 @pytest.fixture
 def dock(monkeypatch):
-    from qgis.core import QgsGeometry, QgsProject, QgsSettings
+    from qgis.core import QgsApplication, QgsGeometry, QgsProject, QgsSettings
     QgsSettings().remove("pobierz_dane_GUGiK")
     server = FakeWfs(total=25)
     catalog = importlib.import_module(f"{PLUGIN_NAME}.core.catalog")
@@ -77,6 +78,9 @@ def dock(monkeypatch):
     QgsProject.instance().removeAllMapLayers()
     yield d
     server.close()
+    d.shutdown()
+    d.deleteLater()
+    QgsApplication.processEvents()
     QgsProject.instance().removeAllMapLayers()
 
 
@@ -190,7 +194,7 @@ def test_skorowidz_excludes_wfs_and_shows_years(dock):
     item.setCheckState(0, Qt.CheckState.Checked)
     sel = dock.sources.selection()
     assert sel.sources == [] and sel.skorowidz.label == "ortofotomapa"
-    assert not dock.sources.years_row.isHidden() and sel.years == ["2025"]
+    assert not dock.sources.years_row.isHidden() and sel.years == [str(datetime.date.today().year)]
     dock.scope.tabs.setCurrentIndex(ScopeTab.IDS)
     assert not dock.btn_download.isEnabled()
 
@@ -338,3 +342,111 @@ def test_enter_starts_only_when_ready(dock, monkeypatch):
     dock.scope.txt_nr.setText("5")
     dock.scope.txt_nr.returnPressed.emit()
     assert started == [1]
+
+
+def _band_vertices(dock):
+    return dock.band.numberOfVertices()
+
+
+def test_layer_multipolygon_uses_both_parts(dock):
+    """Zgłoszony błąd: MultiPolygon w warstwie → TypeError w filters.spatial (QGIS 4)."""
+    from qgis.core import QgsFeature, QgsGeometry, QgsProject, QgsVectorLayer
+    lyr = QgsVectorLayer("MultiPolygon?crs=epsg:2180", "multi", "memory")
+    f = QgsFeature()
+    f.setGeometry(QgsGeometry.fromWkt(
+        "MULTIPOLYGON(((284002 366002, 284008 366002, 284008 366008, 284002 366008, 284002 366002)),"
+        "((284002 366402, 284008 366402, 284008 366408, 284002 366408, 284002 366402)))"))
+    lyr.dataProvider().addFeatures([f])
+    QgsProject.instance().addMapLayer(lyr)
+    dock.sources.select_labels(["dzialki (EGIB)"])
+    dock.scope.tabs.setCurrentIndex(ScopeTab.LAYER)
+    dock.scope.cmb_layer.setLayer(lyr)
+    dock.scope.chk_selected.setChecked(False)
+    dock.start()
+    _wait(dock)
+    ids = sorted(x["ID_DZIALKI"] for x in _layer("Dzialki").getFeatures())
+    # działki 0 (N 366000) i 20 (N 366400) – po jednej z każdej części, nic pomiędzy
+    assert ids == ["022602_1.0003.0", "022602_1.0003.20"], ids
+
+
+def test_drawn_polygon_download_and_highlight(dock):
+    from qgis.core import QgsCoordinateReferenceSystem, QgsGeometry
+    dock.canvas.setDestinationCrs(QgsCoordinateReferenceSystem("EPSG:2180"))
+    dock.sources.select_labels(["dzialki (EGIB)"])
+    dock.scope.tabs.setCurrentIndex(ScopeTab.MAP)
+    dock.scope.rb_polygon.setChecked(True)
+    assert not dock.btn_download.isEnabled()
+    dock._start_draw("polygon")
+    tool = dock.map_tool
+    from qgis.core import QgsPointXY
+    tool.points = [QgsPointXY(284002, 366002), QgsPointXY(284008, 366002),
+                   QgsPointXY(284008, 366048), QgsPointXY(284008, 366048)]   # powtórzony (dwuklik)
+    tool._finish()
+    assert dock.canvas.mapTool() is not tool
+    assert dock.btn_download.isEnabled() and _band_vertices(dock) > 0
+    dock.start()
+    assert _band_vertices(dock) == 0, "podświetlenie powinno zniknąć po starcie"
+    _wait(dock)
+    assert 1 <= _layer("Dzialki").featureCount() <= 4
+
+
+def test_rect_highlight_disappears_on_scope_change(dock):
+    from qgis.core import QgsCoordinateReferenceSystem, QgsRectangle
+    dock.canvas.setDestinationCrs(QgsCoordinateReferenceSystem("EPSG:2180"))
+    dock.sources.select_labels(["dzialki (EGIB)"])
+    dock.scope.tabs.setCurrentIndex(ScopeTab.MAP)
+    dock._start_draw("rect")
+    dock._on_rect(QgsRectangle(284000, 366000, 284100, 366100))
+    assert _band_vertices(dock) > 0
+    dock.scope.tabs.setCurrentIndex(ScopeTab.IDS)
+    assert _band_vertices(dock) == 0
+    dock.scope.tabs.setCurrentIndex(ScopeTab.MAP)
+    assert _band_vertices(dock) > 0          # wraca, bo prostokąt nadal jest zakresem
+    dock.scope.rb_extent.setChecked(True)
+    assert _band_vertices(dock) == 0
+
+
+def test_polygon_escape_cancels(dock):
+    dock.sources.select_labels(["dzialki (EGIB)"])
+    dock.scope.tabs.setCurrentIndex(ScopeTab.MAP)
+    dock.scope.rb_polygon.setChecked(True)
+    dock._start_draw("polygon")
+    tool = dock.map_tool
+    dock._on_draw_cancel()
+    assert dock.canvas.mapTool() is not tool and dock.scope.drawn_polygon is None
+
+
+def test_step_cards_collapse_and_remember(dock):
+    from qgis.core import QgsSettings
+    box = dock.scope_box
+    assert not box.is_collapsed() and box.arrow.text() == "▾"
+    box.toggle()
+    assert box.is_collapsed() and box.content.isHidden() and box.arrow.text() == "▸"
+    assert QgsSettings().value("pobierz_dane_GUGiK/ui/collapsed/step2", False, type=bool)
+    # zwinięty krok z brakami mówi, że trzeba go uzupełnić
+    dock.sources.select_labels(["dzialki (EGIB)"])
+    dock.scope.tabs.setCurrentIndex(ScopeTab.IDS)
+    assert "rozwiń" in box.summary.text()
+    mod = importlib.import_module(f"{PLUGIN_NAME}.ui.dock")
+    other = mod.PD_GUGiKDock(_Iface())
+    try:
+        assert other.scope_box.is_collapsed() and not other.source_box.is_collapsed()
+    finally:
+        other.shutdown()
+        other.deleteLater()
+    box.toggle()
+    assert not box.is_collapsed()
+
+
+def test_tasks_panel_collapses_and_opens_for_new_task(dock):
+    dock.tasks.toggle()
+    assert dock.tasks.is_collapsed()
+    dock.tasks.add("próba")
+    assert not dock.tasks.is_collapsed() and dock.tasks.title.text() == "Zadania (1)"
+
+
+def test_skorowidz_years_reach_current_year():
+    services = importlib.import_module(f"{PLUGIN_NAME}.skorowidz_services")
+    year = datetime.date.today().year
+    orto = services.SKOROWIDZ_BY_LABEL["ortofotomapa"]
+    assert orto.year_range[0] == year

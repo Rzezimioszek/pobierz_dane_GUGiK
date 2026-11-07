@@ -43,6 +43,16 @@ QLabel#stepTitle {
     font-weight: 600;
     font-size: 11pt;
 }
+QToolButton#stepArrow {
+    border: none;
+    padding: 0px;
+    min-width: 14px;
+    color: palette(mid);
+    font-size: 10pt;
+}
+QToolButton#stepArrow:hover {
+    color: palette(highlight);
+}
 QLabel#stepSummary {
     color: palette(mid);
 }

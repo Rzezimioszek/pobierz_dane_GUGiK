@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from conftest import PLUGIN_DIR, PLUGIN_NAME
+from conftest import PLUGIN_NAME
 from fake_wfs import FakeWfs
 
 os.environ["NO_PROXY"] = "127.0.0.1,localhost"
@@ -162,3 +162,32 @@ def test_hits(server):
     tasks = mod("tasks")
     task = tasks.HitsTask(_source(server.url), "<x/>")
     assert task.run() and task.hits == 1005
+
+
+# ---------------------------------------------------------------- filtr dla wielu części
+
+MULTI = ("MULTIPOLYGON(((284000 366000, 284010 366000, 284010 366010, 284000 366000)),"
+         "((290000 370000, 290010 370000, 290010 370010, 290000 370000)))")
+
+
+def test_spatial_multipolygon_uses_every_part():
+    from xml.etree import ElementTree as ET
+    f = mod("filters")
+    xml = f.spatial("geom", MULTI, use_bbox=False)
+    root = ET.fromstring(xml)
+    assert root[0].tag.endswith("Or") and len(root[0]) == 2
+    assert "366000.0 284000.0" in xml and "370000.0 290000.0" in xml
+
+
+def test_spatial_single_part_multipolygon_and_curve():
+    f = mod("filters")
+    one = "MULTIPOLYGON(((284000 366000, 284010 366000, 284010 366010, 284000 366000)))"
+    assert "<fes:Or>" not in f.spatial("geom", one, use_bbox=False)
+    curve = "CURVEPOLYGON(CIRCULARSTRING(284000 366000, 284010 366010, 284020 366000, 284010 365990, 284000 366000))"
+    assert "<fes:Intersects>" in f.spatial("geom", curve, use_bbox=False)
+
+
+def test_spatial_bbox_for_points_and_flag():
+    f = mod("filters")
+    assert "<fes:BBOX>" in f.spatial("geom", "POINT(284000 366000)", use_bbox=False)
+    assert "<fes:BBOX>" in f.spatial("geom", MULTI, use_bbox=True)

@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Narzędzia mapy: rysowanie prostokąta i podświetlenie zakresu."""
+"""Narzędzia mapy: rysowanie prostokąta i wielokąta, podświetlenie zakresu."""
 from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsGeometry, QgsProject, QgsRectangle
 from qgis.gui import QgsMapToolEmitPoint, QgsRubberBand
+from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtGui import QColor
 
 from ..qt_compat import GEOM_POLYGON
@@ -70,4 +71,74 @@ class RectangleMapTool(QgsMapToolEmitPoint):
 
     def deactivate(self):
         self.band.reset(GEOM_POLYGON)
+        super().deactivate()
+
+
+class PolygonMapTool(QgsMapToolEmitPoint):
+    """
+    Wielokąt rysowany kliknięciami: lewy przycisk dodaje wierzchołek,
+    prawy przycisk albo dwuklik kończy (min. 3 wierzchołki), Backspace cofa
+    ostatni punkt, Esc anuluje. `callback(QgsGeometry)` w układzie mapy.
+    """
+
+    def __init__(self, canvas, callback, on_cancel=None):
+        super().__init__(canvas)
+        self.canvas = canvas
+        self.callback = callback
+        self.on_cancel = on_cancel
+        self.band = make_band(canvas)
+        self.points = []
+
+    def _redraw(self, hover=None) -> None:
+        pts = self.points + ([hover] if hover is not None else [])
+        self.band.reset(GEOM_POLYGON)
+        if len(pts) >= 2:
+            self.band.setToGeometry(QgsGeometry.fromPolygonXY([pts + [pts[0]]]), None)
+
+    def canvasPressEvent(self, e):
+        if e.button() == Qt.MouseButton.RightButton:
+            self._finish()
+            return
+        self.points.append(self.toMapCoordinates(e.pos()))
+        self._redraw()
+
+    def canvasMoveEvent(self, e):
+        if self.points:
+            self._redraw(self.toMapCoordinates(e.pos()))
+
+    def canvasDoubleClickEvent(self, e):
+        # dwuklik dodał już punkt w canvasPressEvent – kończymy
+        self._finish()
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key.Key_Escape:
+            self._reset()
+            if self.on_cancel:
+                self.on_cancel()
+        elif e.key() in (Qt.Key.Key_Backspace, Qt.Key.Key_Delete) and self.points:
+            self.points.pop()
+            self._redraw()
+        elif e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self._finish()
+
+    def _finish(self) -> None:
+        pts = []
+        for p in self.points:   # bez powtórzonych punktów (dwuklik)
+            if not pts or p != pts[-1]:
+                pts.append(p)
+        self._reset()
+        if len(pts) < 3:
+            return
+        geom = QgsGeometry.fromPolygonXY([pts + [pts[0]]])
+        if not geom.isGeosValid():
+            geom = geom.makeValid()
+        if not geom.isEmpty():
+            self.callback(geom)
+
+    def _reset(self) -> None:
+        self.points = []
+        self.band.reset(GEOM_POLYGON)
+
+    def deactivate(self):
+        self._reset()
         super().deactivate()

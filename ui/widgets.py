@@ -56,19 +56,50 @@ def set_state(widget, state: str) -> None:
     widget.style().polish(widget)
 
 
-class StepCard(QFrame):
-    """Karta kroku: numer w kółku (szary → kolor, gdy krok kompletny), tytuł, skrót wyboru."""
+def _collapsed_key(key: str) -> str:
+    return f"{SETTINGS}/ui/collapsed/{key}"
 
-    def __init__(self, number: int, title: str, parent=None):
+
+class _Header(QWidget):
+    """Nagłówek karty – kliknięcie w dowolnym miejscu zwija/rozwija kartę."""
+    clicked = pyqtSignal()
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mouseReleaseEvent(e)
+
+
+class StepCard(QFrame):
+    """
+    Karta kroku: strzałka zwijania, numer w kółku (szary → kolor, gdy krok
+    kompletny), tytuł i skrót wyboru. Zwinięta karta pokazuje tylko nagłówek
+    ze skrótem; stan zwinięcia jest pamiętany między sesjami.
+    """
+    toggled = pyqtSignal(bool)
+
+    def __init__(self, number: int, title: str, parent=None, key: str = ""):
         super().__init__(parent)
         self.setObjectName("stepCard")
+        self.key = key or f"step{number}"
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 8, 10, 10)
         outer.setSpacing(6)
-        head = QHBoxLayout()
+        self.header = _Header()
+        self.header.setObjectName("stepHeader")
+        self.header.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.header.setToolTip(tr("Kliknij, aby zwinąć lub rozwinąć"))
+        head = QHBoxLayout(self.header)
+        head.setContentsMargins(0, 0, 0, 0)
         head.setSpacing(8)
+        self.arrow = QToolButton()
+        self.arrow.setObjectName("stepArrow")
+        self.arrow.setAutoRaise(True)
+        self.arrow.clicked.connect(self.toggle)
+        head.addWidget(self.arrow)
         self.badge = QLabel(str(number))
         self.badge.setObjectName("stepBadge")
+        self.badge.setProperty("number", str(number))
         head.addWidget(self.badge)
         self.title = QLabel(title)
         self.title.setObjectName("stepTitle")
@@ -76,25 +107,56 @@ class StepCard(QFrame):
         head.addStretch(1)
         self.summary = QLabel()
         self.summary.setObjectName("stepSummary")
-        head.addWidget(self.summary)
-        outer.addLayout(head)
-        self.body = QVBoxLayout()
+        self.summary.setWordWrap(False)
+        self.summary.setMinimumWidth(0)
+        head.addWidget(self.summary, 0)
+        self.header.clicked.connect(self.toggle)
+        outer.addWidget(self.header)
+        self.content = QWidget()
+        self.body = QVBoxLayout(self.content)
         self.body.setContentsMargins(0, 0, 0, 0)
-        outer.addLayout(self.body)
+        outer.addWidget(self.content)
+        self._summary = ""
+        self._state = "idle"
+        self.set_collapsed(QgsSettings().value(_collapsed_key(self.key), False, type=bool), save=False)
         self.set_state("idle")
 
+    # ---------------------------------------------------------------- zwijanie
+    def is_collapsed(self) -> bool:
+        return self.content.isHidden()
+
+    def set_collapsed(self, collapsed: bool, save: bool = True) -> None:
+        self.content.setVisible(not collapsed)
+        self.arrow.setText("▸" if collapsed else "▾")
+        set_state(self.header, "collapsed" if collapsed else "open")
+        self._update_summary()
+        if save:
+            QgsSettings().setValue(_collapsed_key(self.key), bool(collapsed))
+        self.toggled.emit(collapsed)
+
+    def toggle(self) -> None:
+        self.set_collapsed(not self.is_collapsed())
+
+    # ---------------------------------------------------------------- stan
     def set_state(self, state: str, summary: str = "") -> None:
         """idle – jeszcze nie dotyczy, todo – czegoś brakuje, done – gotowe."""
+        self._state, self._summary = state, summary
         set_state(self, state)
         set_state(self.badge, state)
         self.badge.setText("✓" if state == "done" else self.badge.property("number") or self.badge.text())
-        self.summary.setText(summary)
+        self._update_summary()
+
+    def _update_summary(self) -> None:
+        text = self._summary
+        if not text and self.is_collapsed() and self._state == "todo":
+            text = tr("do uzupełnienia – rozwiń")
+        self.summary.setToolTip(text)
+        # długi skrót przycinamy, żeby nie poszerzał panelu
+        self.summary.setText(text if len(text) <= 38 else text[:36] + "…")
 
 
-def step_box(number: int, title: str) -> tuple:
-    card = StepCard(number, title)
-    card.badge.setProperty("number", str(number))
-    card.set_state("idle")
+def step_box(number: int, title: str, key: str = "") -> tuple:
+    card = StepCard(number, title, key=key)
     return card, card.body
 
 
@@ -349,10 +411,11 @@ class SourcePicker(QWidget):
 
 @dataclass
 class Scope:
-    kind: str                       # teryt | extent | rect | layer | ids | obreb
+    kind: str                       # teryt | extent | rect | polygon | layer | ids | obreb
     teryt: str = ""
     precise: bool = False
     rect = None                     # QgsRectangle w układzie mapy (extent / rect)
+    geom = None                     # QgsGeometry w układzie mapy (polygon)
     layer = None                    # QgsVectorLayer
     selected_only: bool = False
     ids: list = field(default_factory=list)
@@ -362,6 +425,7 @@ class Scope:
     def describe(self) -> str:
         return {
             "teryt": f"TERYT {self.teryt}", "extent": "widok mapy", "rect": "narysowany prostokąt",
+            "polygon": "narysowany wielokąt",
             "layer": f"warstwa {self.layer.name() if self.layer else ''}",
             "ids": f"{len(self.ids)} identyfikatorów", "obreb": f"obręb {self.obreb}, działka {self.nr}",
         }.get(self.kind, self.kind)
@@ -370,7 +434,7 @@ class Scope:
 class ScopePicker(QWidget):
     """Zakładki sposobów wyboru zakresu; w danej chwili działa jeden."""
     changed = pyqtSignal()
-    draw_requested = pyqtSignal()
+    draw_requested = pyqtSignal(str)   # "rect" | "polygon"
     show_unit_requested = pyqtSignal(str)
     submit = pyqtSignal()   # Enter w polu tekstowym – „pobierz, jeśli gotowe”
 
@@ -380,6 +444,7 @@ class ScopePicker(QWidget):
         super().__init__(parent)
         self.units = units
         self.drawn_rect = None
+        self.drawn_polygon = None   # QgsGeometry w układzie mapy
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         self.tabs = QTabWidget()
@@ -412,7 +477,7 @@ class ScopePicker(QWidget):
         self.teryt = TerytScopeWidget()
         self.teryt.inject_scope_data(self.units.wojewodztwa, self.units.powiaty,
                                      self.units.gminy, self.units.name_to_teryt)
-        self.teryt.teryt_changed.connect(lambda *_: self._unit_changed())
+        self.teryt.teryt_changed.connect(self._unit_changed)
         lay.addWidget(self.teryt)
         self.unit_hint = hint_label()
         self.unit_hint.setVisible(False)
@@ -432,7 +497,7 @@ class ScopePicker(QWidget):
         lay.addStretch(1)
         return w
 
-    def _unit_changed(self):
+    def _unit_changed(self, *_):
         t = self.teryt.get_resolved_teryt()
         self.unit_hint.setText(self.units.describe(t) if t else "")
         self.unit_hint.setVisible(bool(self.unit_hint.text()))
@@ -442,13 +507,14 @@ class ScopePicker(QWidget):
         w = QWidget()
         lay = QVBoxLayout(w)
         self.rb_extent = QRadioButton(tr("Bieżący widok mapy"))
-        self.rb_rect = QRadioButton(tr("Narysowany prostokąt"))
+        self.rb_rect = QRadioButton(tr("Prostokąt"))
+        self.rb_polygon = QRadioButton(tr("Wielokąt (dowolny kształt)"))
         self.rb_extent.setChecked(True)
         grp = QButtonGroup(w)
-        grp.addButton(self.rb_extent)
-        grp.addButton(self.rb_rect)
-        lay.addWidget(self.rb_extent)
-        lay.addWidget(self.rb_rect)
+        for rb in (self.rb_extent, self.rb_rect, self.rb_polygon):
+            grp.addButton(rb)
+            lay.addWidget(rb)
+            rb.toggled.connect(self._map_mode_changed)
         row = QHBoxLayout()
         row.addSpacing(20)
         self.btn_draw = QPushButton(tr("Rysuj na mapie…"))
@@ -458,14 +524,32 @@ class ScopePicker(QWidget):
         lay.addLayout(row)
         self.map_hint = hint_label()
         lay.addWidget(self.map_hint)
-        self.rb_extent.toggled.connect(lambda *_: self.changed.emit())
         lay.addStretch(1)
+        self._map_mode_changed()
         return w
 
+    def map_mode(self) -> str:
+        return "polygon" if self.rb_polygon.isChecked() else "rect" if self.rb_rect.isChecked() else "extent"
+
+    def _map_mode_changed(self, *_):
+        mode = self.map_mode()
+        self.btn_draw.setEnabled(mode != "extent")
+        drawn = self.drawn_rect if mode == "rect" else self.drawn_polygon if mode == "polygon" else None
+        if mode == "extent":
+            self.map_hint.setText(tr("Zakres = to, co widać teraz na mapie."))
+        elif drawn is None:
+            self.map_hint.setText(tr("Kliknij „Rysuj na mapie…”."))
+        self.changed.emit()
+
     def _start_draw(self):
-        self.rb_rect.setChecked(True)
-        self.map_hint.setText(tr("Przeciągnij myszą na mapie, aby zaznaczyć prostokąt."))
-        self.draw_requested.emit()
+        if self.map_mode() == "extent":
+            self.rb_rect.setChecked(True)
+        if self.map_mode() == "polygon":
+            self.map_hint.setText(tr("Klikaj kolejne wierzchołki. Prawy przycisk albo dwuklik kończy, "
+                                     "Backspace cofa punkt, Esc anuluje."))
+        else:
+            self.map_hint.setText(tr("Przeciągnij myszą na mapie, aby zaznaczyć prostokąt."))
+        self.draw_requested.emit(self.map_mode())
 
     def set_drawn_rect(self, rect) -> None:
         self.drawn_rect = rect
@@ -474,16 +558,29 @@ class ScopePicker(QWidget):
                               f"{rect.width():.0f} × {rect.height():.0f} " + tr("(jednostki mapy)."))
         self.changed.emit()
 
+    def set_drawn_polygon(self, geom) -> None:
+        self.drawn_polygon = geom
+        self.rb_polygon.setChecked(True)
+        n = max(0, geom.constGet().nCoordinates() - 1)
+        self.map_hint.setText(tr("Narysowano wielokąt, wierzchołków: ") + str(n))
+        self.changed.emit()
+
+    def _emit_changed(self, *_) -> None:
+        self.changed.emit()
+
+    def draw_cancelled(self) -> None:
+        self._map_mode_changed()
+
     def _tab_layer(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.addWidget(QLabel(tr("Warstwa poligonowa:")))
         self.cmb_layer = QgsMapLayerComboBox()
         self.cmb_layer.setFilters(LAYER_FILTER_POLYGON)
-        self.cmb_layer.layerChanged.connect(lambda *_: self.changed.emit())
+        self.cmb_layer.layerChanged.connect(self._emit_changed)
         lay.addWidget(self.cmb_layer)
         self.chk_selected = QCheckBox(tr("Tylko zaznaczone obiekty"))
-        self.chk_selected.toggled.connect(lambda *_: self.changed.emit())
+        self.chk_selected.toggled.connect(self._emit_changed)
         lay.addWidget(self.chk_selected)
         lay.addWidget(hint_label())
         lay.itemAt(lay.count() - 1).widget().setText(
@@ -538,19 +635,19 @@ class ScopePicker(QWidget):
         comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         comp.setFilterMode(Qt.MatchFlag.MatchStartsWith)
         self.txt_obreb.setCompleter(comp)
-        self.txt_obreb.textChanged.connect(lambda *_: self._obreb_changed())
+        self.txt_obreb.textChanged.connect(self._obreb_changed)
         lay.addWidget(self.txt_obreb)
         lay.addWidget(QLabel(tr("Numer działki:")))
         self.txt_nr = QLineEdit()
         self.txt_nr.setPlaceholderText(tr("np. 123/4"))
-        self.txt_nr.textChanged.connect(lambda *_: self.changed.emit())
+        self.txt_nr.textChanged.connect(self._emit_changed)
         lay.addWidget(self.txt_nr)
         self.obreb_hint = hint_label()
         lay.addWidget(self.obreb_hint)
         lay.addStretch(1)
         return w
 
-    def _obreb_changed(self):
+    def _obreb_changed(self, *_):
         n = len(self.units.find_obreby(self.txt_obreb.text()))
         name = self.txt_obreb.text().strip()
         self.obreb_hint.setText("" if not name else (
@@ -567,8 +664,9 @@ class ScopePicker(QWidget):
             return Scope("teryt", teryt=self.teryt.get_resolved_teryt(),
                          precise=self.chk_precise.isChecked())
         if tab == "map":
-            s = Scope("rect" if self.rb_rect.isChecked() else "extent")
-            s.rect = self.drawn_rect if self.rb_rect.isChecked() else None
+            s = Scope(self.map_mode())
+            s.rect = self.drawn_rect if s.kind == "rect" else None
+            s.geom = self.drawn_polygon if s.kind == "polygon" else None
             return s
         if tab == "layer":
             s = Scope("layer", selected_only=self.chk_selected.isChecked())
@@ -754,16 +852,25 @@ class TaskRow(QFrame):
 
 
 class TasksPanel(QWidget):
+    """Lista zadań; nagłówek zwija listę (nowe zadanie zawsze ją rozwija)."""
     open_log = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        head = QHBoxLayout()
-        lbl = QLabel(tr("Zadania"))
-        lbl.setObjectName("stepTitle")
-        head.addWidget(lbl)
+        self.header = _Header()
+        self.header.setCursor(Qt.CursorShape.PointingHandCursor)
+        head = QHBoxLayout(self.header)
+        head.setContentsMargins(0, 0, 0, 0)
+        self.arrow = QToolButton()
+        self.arrow.setObjectName("stepArrow")
+        self.arrow.setAutoRaise(True)
+        self.arrow.clicked.connect(self.toggle)
+        head.addWidget(self.arrow)
+        self.title = QLabel(tr("Zadania"))
+        self.title.setObjectName("stepTitle")
+        head.addWidget(self.title)
         head.addStretch(1)
         btn_log = QToolButton()
         btn_log.setObjectName("link")
@@ -776,17 +883,43 @@ class TasksPanel(QWidget):
         btn_clear.setText(tr("Wyczyść"))
         btn_clear.clicked.connect(self.clear_finished)
         head.addWidget(btn_clear)
-        lay.addLayout(head)
+        self.header.clicked.connect(self.toggle)
+        lay.addWidget(self.header)
+        self.content = QWidget()
+        body = QVBoxLayout(self.content)
+        body.setContentsMargins(0, 0, 0, 0)
         self.rows = QVBoxLayout()
-        lay.addLayout(self.rows)
+        body.addLayout(self.rows)
         self.empty = hint_label()
         self.empty.setText(tr("Brak zadań."))
-        lay.addWidget(self.empty)
+        body.addWidget(self.empty)
+        lay.addWidget(self.content)
+        self.set_collapsed(QgsSettings().value(_collapsed_key("tasks"), False, type=bool), save=False)
+
+    def is_collapsed(self) -> bool:
+        return self.content.isHidden()
+
+    def set_collapsed(self, collapsed: bool, save: bool = True) -> None:
+        self.content.setVisible(not collapsed)
+        self.arrow.setText("▸" if collapsed else "▾")
+        self._update_title()
+        if save:
+            QgsSettings().setValue(_collapsed_key("tasks"), bool(collapsed))
+
+    def toggle(self) -> None:
+        self.set_collapsed(not self.is_collapsed())
+
+    def _update_title(self) -> None:
+        n = self.rows.count()
+        self.title.setText(tr("Zadania") + (f" ({n})" if n else ""))
 
     def add(self, title: str, task=None) -> TaskRow:
         row = TaskRow(title, task)
         self.rows.insertWidget(0, row)
         self.empty.setVisible(False)
+        if self.is_collapsed():
+            self.set_collapsed(False, save=False)
+        self._update_title()
         return row
 
     def clear_finished(self) -> None:
@@ -795,3 +928,4 @@ class TasksPanel(QWidget):
             if w is not None and not w.running:
                 w.setParent(None)
         self.empty.setVisible(self.rows.count() == 0)
+        self._update_title()

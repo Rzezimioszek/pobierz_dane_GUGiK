@@ -20,7 +20,7 @@ from qgis.PyQt.QtWidgets import (
 
 from . import tr
 from .admin_units import AdminUnits
-from .map_tools import RectangleMapTool, make_band, show_geometry
+from .map_tools import PolygonMapTool, RectangleMapTool, make_band, show_geometry
 from .widgets import (
     OutputPicker, ScopePicker, SourcePicker, TasksPanel, hint_label, set_state, step_box,
 )
@@ -68,6 +68,8 @@ class PD_GUGiKDock(QDockWidget):
         self.map_tool = None
         self._prev_tool = None
         self.band = make_band(self.canvas)
+        self._shown = None            # co jest podświetlone: ("rect"|"polygon"|"unit", id)
+        self._draw_tools = {}         # "rect" / "polygon" → narzędzie mapy
         self._raster_queue = []
 
         self._build()
@@ -177,10 +179,11 @@ class PD_GUGiKDock(QDockWidget):
                 except RuntimeError:
                     pass
         self._stop_draw()
-        if self.map_tool is not None:
-            self.map_tool.band.reset(GEOM_POLYGON)
-            self.canvas.scene().removeItem(self.map_tool.band)
-            self.map_tool = None
+        for tool in self._draw_tools.values():
+            tool.band.reset(GEOM_POLYGON)
+            self.canvas.scene().removeItem(tool.band)
+        self._draw_tools = {}
+        self.map_tool = None
         self.band.reset(GEOM_POLYGON)
         self.canvas.scene().removeItem(self.band)
         if self.canvas is not None:
@@ -215,6 +218,7 @@ class PD_GUGiKDock(QDockWidget):
             return False
 
         scope = self.scope.scope()
+        self._sync_highlight(scope)
         step, problem = self._problem(sel, scope)
         self._package_context(sel, scope)
         self.scope_box.set_state("idle" if step == 1 else "todo" if step == 2 else "done",
@@ -249,6 +253,8 @@ class PD_GUGiKDock(QDockWidget):
             return tr("Wybierz jednostkę albo wpisz kod TERYT.")
         if scope.kind == "rect" and scope.rect is None:
             return tr("Narysuj prostokąt na mapie (przycisk „Rysuj na mapie…”).")
+        if scope.kind == "polygon" and scope.geom is None:
+            return tr("Narysuj wielokąt na mapie (przycisk „Rysuj na mapie…”).")
         if scope.kind == "layer":
             if scope.layer is None:
                 return tr("Wybierz warstwę poligonową.")
@@ -285,22 +291,61 @@ class PD_GUGiKDock(QDockWidget):
 
     # ================================================================== mapa
 
-    def _start_draw(self) -> None:
-        if self.map_tool is None:
-            self.map_tool = RectangleMapTool(self.canvas, self._on_rect)
+    def _start_draw(self, kind: str = "rect") -> None:
+        self._stop_draw()
+        if kind not in self._draw_tools:
+            self._draw_tools[kind] = (
+                PolygonMapTool(self.canvas, self._on_polygon, self._on_draw_cancel)
+                if kind == "polygon" else RectangleMapTool(self.canvas, self._on_rect))
+        self.map_tool = self._draw_tools[kind]
         self._prev_tool = self.canvas.mapTool()
+        self._clear_highlight()
         self.canvas.setMapTool(self.map_tool)
+        self.canvas.setFocus()   # klawisze Esc / Backspace dla wielokąta
 
     def _stop_draw(self) -> None:
         if self.map_tool is not None and self.canvas.mapTool() is self.map_tool:
             self.canvas.unsetMapTool(self.map_tool)
-            if self._prev_tool is not None:
+            if self._prev_tool is not None and self._prev_tool is not self.map_tool:
                 self.canvas.setMapTool(self._prev_tool)
 
     def _on_rect(self, rect) -> None:
         self._stop_draw()
-        self.scope.set_drawn_rect(rect)
-        show_geometry(self.band, self._to_2180(QgsGeometry.fromRect(rect)), self.canvas, zoom=False)
+        self.scope.set_drawn_rect(rect)      # → _validate → podświetlenie
+
+    def _on_polygon(self, geom) -> None:
+        self._stop_draw()
+        self.scope.set_drawn_polygon(geom)
+
+    def _on_draw_cancel(self) -> None:
+        self._stop_draw()
+        self.scope.draw_cancelled()
+
+    # ------------------------------------------------------------------ podświetlenie
+
+    def _highlight(self, key, geom_2180, zoom=False) -> None:
+        show_geometry(self.band, geom_2180, self.canvas, zoom=zoom)
+        self._shown = key
+
+    def _clear_highlight(self) -> None:
+        self.band.reset(GEOM_POLYGON)
+        self._shown = None
+
+    def _sync_highlight(self, scope) -> None:
+        """
+        Podświetla narysowany zakres, póki jest wybrany; znika po zmianie zakresu.
+        Granica jednostki („Pokaż na mapie”) znika po przejściu do innej zakładki.
+        """
+        if scope.kind == "rect" and scope.rect is not None:
+            key = ("rect", id(scope.rect))
+            if self._shown != key:
+                self._highlight(key, self._to_2180(QgsGeometry.fromRect(scope.rect)))
+        elif scope.kind == "polygon" and scope.geom is not None:
+            key = ("polygon", id(scope.geom))
+            if self._shown != key:
+                self._highlight(key, self._to_2180(scope.geom))
+        elif self._shown is not None and not (self._shown[0] == "unit" and scope.kind == "teryt"):
+            self._clear_highlight()
 
     def _to_2180(self, geom, crs=None) -> QgsGeometry:
         g = QgsGeometry(geom)
@@ -321,7 +366,7 @@ class PD_GUGiKDock(QDockWidget):
             if geom is None:
                 row.finish(tr("Nie znaleziono granicy dla ") + teryt, ok=False)
                 return
-            show_geometry(self.band, geom, self.canvas)
+            self._highlight(("unit", teryt), geom, zoom=True)
             row.finish(tr("Granica podświetlona na mapie."))
         self._run(task, done)
 
@@ -345,6 +390,7 @@ class PD_GUGiKDock(QDockWidget):
         sel = self.sources.selection()
         scope = self.scope.scope()
         out = self.output.output()
+        self._clear_highlight()   # zakres przyjęty – podświetlenie już niepotrzebne
 
         if scope.kind == "teryt":
             self._start_teryt(sel, scope, out)
@@ -357,6 +403,13 @@ class PD_GUGiKDock(QDockWidget):
             for s in sel.sources:
                 self._download(s, [tasks.Query(filters.spatial(s.geom_field, geom.asWkt()), label=label)],
                                out, label)
+        elif scope.kind == "polygon":
+            geom = self._to_2180(scope.geom)
+            if sel.skorowidz is not None:
+                self._search_skorowidz(sel, geom)
+            for s in sel.sources:
+                self._download(s, self._geometry_queries(s, [geom], scope.describe()), out,
+                               scope.describe())
         elif scope.kind == "layer":
             self._start_layer(sel, scope, out)
         elif scope.kind == "ids":
@@ -437,19 +490,27 @@ class PD_GUGiKDock(QDockWidget):
         if sel.skorowidz is not None:
             self._search_skorowidz(sel, QgsGeometry.unaryUnion(geoms))
         for s in sel.sources:
-            queries = []
-            for i, g in enumerate(geoms):
-                label = f"{layer.name()} #{i + 1}"
-                if g.constGet().nCoordinates() <= 100:
-                    queries.append(tasks.Query(filters.spatial(s.geom_field, g.asWkt(), use_bbox=False),
-                                               label=label))
-                    continue
+            self._download(s, self._geometry_queries(s, geoms, layer.name()), out, scope.describe())
+
+    @staticmethod
+    def _geometry_queries(source, geoms, label) -> list:
+        """
+        Zapytanie na każdą geometrię (EPSG:2180). Do 100 wierzchołków: dokładny
+        kształt (każda część osobno), więcej: otoczka wypukła albo prostokąt.
+        Zawsze z przycięciem po pobraniu, więc wynik odpowiada dokładnie geometrii.
+        """
+        queries = []
+        for i, g in enumerate(geoms):
+            name = f"{label} #{i + 1}" if len(geoms) > 1 else label
+            if g.constGet().nCoordinates() <= 100:
+                flt = filters.spatial(source.geom_field, g.asWkt(), use_bbox=False)
+            else:
                 hull = g.convexHull()
-                flt = (filters.spatial(s.geom_field, hull.asWkt(), use_bbox=False)
+                flt = (filters.spatial(source.geom_field, hull.asWkt(), use_bbox=False)
                        if hull.constGet().nCoordinates() <= 100
-                       else filters.spatial(s.geom_field, g.asWkt(), use_bbox=True))
-                queries.append(tasks.Query(flt, clip_geom=g, label=label))
-            self._download(s, queries, out, scope.describe())
+                       else filters.spatial(source.geom_field, g.asWkt(), use_bbox=True))
+            queries.append(tasks.Query(flt, clip_geom=g, label=name))
+        return queries
 
     # ------------------------------------------------------------------ po ID / obrębie
 
@@ -536,14 +597,22 @@ class PD_GUGiKDock(QDockWidget):
         task = tasks.SkorowidzSearchTask(svc.url, names, geom)
         row = self.tasks.add(tr("Skorowidz: ") + svc.label, task)
 
+        year_of = dict(zip(names, sel.years)) if svc.year_range is not None else {}
+
         def done(features, errors):
+            failed = [year_of[n] for n, _ in errors if n in year_of]
+            note = (tr("; niedostępne roczniki: ") + ", ".join(failed)
+                    + tr(" (mogą nie być jeszcze opublikowane)")) if failed else ""
             if not features:
                 msg = tr("Brak arkuszy w tym zakresie.")
                 if errors and len(errors) == len(names):
-                    msg = tr("Błąd: ") + errors[0][1][:200]
-                row.finish(msg, ok=not errors or len(errors) < len(names))
+                    msg = (tr("Brak rocznika w usłudze: ") + ", ".join(failed)
+                           + tr(" (może nie być jeszcze opublikowany).")) if failed \
+                        else tr("Błąd: ") + errors[0][1][:200]
+                    note = ""
+                row.finish(msg + note, ok=not errors or len(errors) < len(names))
                 return
-            row.finish(tr("Znaleziono arkuszy: ") + str(len(features)))
+            row.finish(tr("Znaleziono arkuszy: ") + str(len(features)) + note)
             dialog = WfsIndexResultsDialog(features, self)
             if dialog.exec() and dialog.selected_urls:
                 self._load_rasters(dialog.selected_urls, dialog.load_mode)
