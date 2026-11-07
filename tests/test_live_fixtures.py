@@ -31,6 +31,8 @@ def test_live_gml_parses_and_lands_in_poland(path):
     text = open(path, encoding="utf-8").read()
     if gml.service_exception(text):
         pytest.skip(f"usługa zwróciła błąd: {gml.service_exception(text)[:100]}")
+    if 'numberReturned="0"' in text[:3000]:
+        pytest.skip("pusta odpowiedź – w prostokącie próbki nie ma obiektów tej warstwy")
     reader = gml.read_typed if os.path.basename(path).startswith("skorowidz") else gml.parse_features
     feats = reader(text)
     assert feats, "odpowiedź bez obiektów z geometrią"
