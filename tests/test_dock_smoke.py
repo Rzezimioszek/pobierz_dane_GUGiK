@@ -508,3 +508,19 @@ def test_separate_layer_option_names_each_download(dock):
     names = sorted(l.name() for l in QgsProject.instance().mapLayers().values())
     assert names == ["Dzialki_ID_1", "Dzialki_ID_2"]
     dock.output.chk_separate.setChecked(False)
+
+
+def test_prefix_field_names_download_and_summary(dock):
+    from qgis.core import QgsProject, QgsSettings
+    dock.output.ed_prefix.setText("Projekt A")
+    assert QgsSettings().value("pobierz_dane_GUGiK/layer_prefix") == "Projekt_A"
+    assert "Projekt_A_Dzialki" in dock.output.prefix_hint.text()
+    dock.sources.select_labels(["dzialki (EGIB)"])
+    dock.scope.tabs.setCurrentIndex(ScopeTab.IDS)
+    dock.scope.txt_ids.setPlainText("022602_1.0003.0")
+    assert "Projekt_A" in dock.output_box.summary.text()
+    dock.start()
+    _wait(dock)
+    assert [l.name() for l in QgsProject.instance().mapLayers().values()] == ["Projekt_A_Dzialki"]
+    dock.output.ed_prefix.clear()
+    assert not dock.output.prefix_hint.isVisible()

@@ -478,7 +478,7 @@ class EziudpWfsTask(QgsTask):
                 layers.write(item["features"], item["name"], item["geom_type"],
                              style=item["style"], load_style=self.output.load_style,
                              fields=item["fields"], gpkg_path=self.output.gpkg_path,
-                             info=item.get("info"))
+                             info=item.get("info"), group=self.output.prefix)
             except Exception as exc:
                 msg = f"Zapis warstwy {item['name']} nie powiódł się: {exc}"
                 QgsMessageLog.logMessage(f"[EziudpWfsTask] {msg}", LOG_TAG, Qgis.MessageLevel.Critical)
@@ -605,7 +605,7 @@ class EziudpWfsTask(QgsTask):
         base_layer_name = cfg.get("layer_name") or (harmonizer.LAYER_NAME if harmonizer else key)
         style_name = (cfg.get("style") or getattr(harmonizer, "STYLE", None)
                       or base_layer_name)
-        mem_layer_name = f"{base_layer_name}_{teryt}"
+        mem_layer_name = self.output.layer_name(f"{base_layer_name}_{teryt}")
 
         # Warstwa już jest w projekcie (np. ponowne uruchomienie) – pomijamy
         if mem_layer_name in self._existing_names:

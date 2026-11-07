@@ -240,7 +240,9 @@ class PD_GUGiKDock(QDockWidget):
 
     def _output_summary(self) -> str:
         path = self.output.gpkg_path() if self.output.rb_gpkg.isChecked() else ""
-        return os.path.basename(path) if path else tr("tymczasowe")
+        text = os.path.basename(path) if path else tr("tymczasowe")
+        prefix = layers.clean_prefix(self.output.ed_prefix.text())
+        return f"{text} · {prefix}" if prefix else text
 
     def _problem(self, sel, scope) -> tuple:
         """(numer kroku, komunikat) pierwszego braku albo (0, '')."""
@@ -466,6 +468,7 @@ class PD_GUGiKDock(QDockWidget):
             return
         task = tasks.FileDownloadTask(url, path, f"{name}")
         row = self.tasks.add(tr("Paczka ") + name, task)
+        out = self.output.output()
 
         def done(saved):
             if not saved:
@@ -473,7 +476,7 @@ class PD_GUGiKDock(QDockWidget):
                            if task.error else tr("Nie udało się pobrać paczki."), ok=False)
                 return
             try:
-                added = layers.add_package(saved, self.output.chk_style.isChecked())
+                added = layers.add_package(saved, out.load_style, out)
             except Exception as exc:
                 row.finish(tr("Pobrano, ale nie wczytano: ") + str(exc), ok=False)
                 return

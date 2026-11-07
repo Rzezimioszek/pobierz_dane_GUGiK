@@ -247,3 +247,46 @@ def test_task_reports_running_count(server):
     task.count_changed.connect(seen.append)
     task.run()
     assert seen == [1000, 1005]
+
+
+def test_prefix_names_layers_and_groups_them():
+    from qgis.core import QgsProject
+    layers, catalog = mod("layers"), mod("catalog")
+    assert layers.clean_prefix("  Projekt A/ł ") == "Projekt_A_ł"
+    assert layers.clean_prefix("__") == ""
+    out = layers.Output(prefix="ProjektA")
+    src = catalog.egib_dzialki()
+    a = layers.write_source(_features(2), src, out, scope="TERYT 1465", tag="1465")
+    b = layers.write_source(_features(3), src, out, scope="TERYT 1465", tag="1465")
+    sep = layers.write_source(_features(1), src, layers.Output(prefix="ProjektA", separate=True),
+                              tag="1465")
+    try:
+        assert a[0] is b[0] and a[0].name() == "ProjektA_Dzialki" and a[0].featureCount() == 3
+        assert sep[0].name() == "ProjektA_Dzialki_1465_1"
+        sub = QgsProject.instance().layerTreeRoot().findGroup("GUGiK").findGroup("ProjektA")
+        assert sub is not None and sub.findLayer(a[0].id()) and sub.findLayer(sep[0].id())
+    finally:
+        QgsProject.instance().removeMapLayers([l.id() for l in a + sep])
+
+
+def test_prefix_in_gpkg_table_names(tmp_path):
+    from qgis.core import QgsProject, QgsVectorLayer
+    layers, catalog = mod("layers"), mod("catalog")
+    path = str(tmp_path / "wynik.gpkg")
+    out = layers.Output(gpkg_path=path, prefix="ProjektB")
+    vl = layers.write_source(_features(2), catalog.egib_dzialki(), out)[0]
+    try:
+        assert QgsVectorLayer(f"{path}|layername=ProjektB_Dzialki", "x", "ogr").featureCount() == 2
+    finally:
+        QgsProject.instance().removeMapLayer(vl.id())
+
+
+def test_output_from_settings_reads_prefix():
+    from qgis.core import QgsSettings
+    layers = mod("layers")
+    QgsSettings().setValue("pobierz_dane_GUGiK/layer_prefix", "ProjektC")
+    try:
+        out = layers.Output.from_settings()
+        assert out.prefix == "ProjektC" and out.layer_name("Dzialki_RCN_1465") == "ProjektC_Dzialki_RCN_1465"
+    finally:
+        QgsSettings().remove("pobierz_dane_GUGiK/layer_prefix")

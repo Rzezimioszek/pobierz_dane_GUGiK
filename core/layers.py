@@ -86,19 +86,26 @@ class Output:
     """Dokąd zapisywać wyniki: warstwy tymczasowe albo jeden plik GeoPackage."""
 
     def __init__(self, gpkg_path: Optional[str] = None, load_style: bool = True,
-                 separate: bool = False):
+                 separate: bool = False, prefix: str = ""):
         self.gpkg_path = gpkg_path or None
         self.load_style = load_style
         # True: każde pobranie do nowej warstwy (Dzialki_1465_1, _2…) zamiast dopisywania
         self.separate = separate
+        # Prefiks nazw warstw, np. „ProjektA” → ProjektA_Dzialki (podgrupa GUGiK/ProjektA)
+        self.prefix = clean_prefix(prefix)
+
+    def layer_name(self, base: str) -> str:
+        return f"{self.prefix}_{base}" if self.prefix else base
 
     @classmethod
     def from_settings(cls, load_style: bool = True) -> "Output":
         s = QgsSettings()
         separate = s.value(f"{SETTINGS_PREFIX}/separate_layers", False, type=bool)
+        prefix = s.value(f"{SETTINGS_PREFIX}/layer_prefix", "", type=str)
+        gpkg = None
         if s.value(f"{SETTINGS_PREFIX}/output_mode", "memory", type=str) == "gpkg":
-            return cls(s.value(f"{SETTINGS_PREFIX}/gpkg_path", "", type=str), load_style, separate)
-        return cls(None, load_style, separate)
+            gpkg = s.value(f"{SETTINGS_PREFIX}/gpkg_path", "", type=str)
+        return cls(gpkg, load_style, separate, prefix)
 
 
 SETTINGS_PREFIX = "pobierz_dane_GUGiK"
@@ -209,18 +216,32 @@ def _gpkg_layer(path: str, name: str, geom_type: str, fields: QgsFields) -> QgsV
     return layer
 
 
-def add_to_project(layer, project: QgsProject = None) -> None:
-    """Dodaje warstwę do projektu, na górę grupy „GUGiK” (tworzy ją na górze drzewa)."""
+def add_to_project(layer, project: QgsProject = None, subgroup: str = "") -> None:
+    """
+    Dodaje warstwę do projektu, na górę grupy „GUGiK” (tworzy ją na górze drzewa);
+    z `subgroup` – do podgrupy GUGiK/<subgroup> (np. prefiks projektu).
+    """
     project = project or QgsProject.instance()
     project.addMapLayer(layer, False)
     root = project.layerTreeRoot()
     group = root.findGroup(GROUP_NAME)
     if group is None:
         group = root.insertGroup(0, GROUP_NAME)
+    if subgroup:
+        sub = group.findGroup(subgroup)
+        if sub is None:
+            sub = group.insertGroup(0, subgroup)
+        group = sub
     group.insertLayer(0, layer)
 
 
 _PL = str.maketrans("ąćęłńóśźżĄĆĘŁŃÓŚŹŻ", "acelnoszzACELNOSZZ")
+
+
+def clean_prefix(text: str) -> str:
+    """Prefiks nazw warstw: litery (także polskie), cyfry, _ i -; bez skrajnych podkreśleń."""
+    text = re.sub(r"[^\w-]+", "_", (text or "").strip(), flags=re.UNICODE)
+    return text.strip("_")[:40]
 
 
 def _safe(text: str) -> str:
@@ -277,7 +298,8 @@ def write(features: list, layer_name: str, geom_type: str,
           unique_field: Optional[str] = None, style: Optional[str] = None,
           load_style: bool = True, project: QgsProject = None,
           numeric: Optional[dict] = None, fields: Optional[QgsFields] = None,
-          gpkg_path: Optional[str] = None, info: Optional[dict] = None) -> Optional[QgsVectorLayer]:
+          gpkg_path: Optional[str] = None, info: Optional[dict] = None,
+          group: str = "") -> Optional[QgsVectorLayer]:
     """
     Dopisuje obiekty do warstwy `layer_name` (tworzy ją, gdy jej nie ma):
     tymczasowej albo w pliku `gpkg_path`.
@@ -287,6 +309,7 @@ def write(features: list, layer_name: str, geom_type: str,
     numeric   – {pole: 'double'|'int'}: te pola dostają typ liczbowy, o ile każda
                 wartość w pierwszej porcji jest liczbą (inaczej zostają tekstem)
     info      – opis pobrania do metadanych warstwy (patrz stamp)
+    group     – podgrupa w grupie „GUGiK” dla nowej warstwy (prefiks projektu)
     Obiekty o wartości `unique_field` już obecnej w warstwie są pomijane.
     Zwraca warstwę albo None, gdy nie było czego zapisać.
     """
@@ -311,7 +334,7 @@ def write(features: list, layer_name: str, geom_type: str,
             vl.updateFields()
         if load_style:
             apply_style(vl, style)
-        add_to_project(vl, project)
+        add_to_project(vl, project, group)
 
     is_multi = QgsWkbTypes.isMultiType(vl.wkbType())
     layer_fields = vl.fields()
@@ -360,9 +383,10 @@ def write_source(features: list, source: Source, output: Optional[Output] = None
     output = output or Output()
     info = {"url": source.url, "typename": source.typename, "scope": scope}
     common = dict(load_style=output.load_style, numeric=source.numeric_fields,
-                  gpkg_path=output.gpkg_path, info=info)
+                  gpkg_path=output.gpkg_path, info=info, group=output.prefix)
 
     def name(base):
+        base = output.layer_name(base)
         return unique_name(base, tag, gpkg_path=output.gpkg_path) if output.separate else base
 
     if source.split_lines_polygons:
@@ -406,7 +430,7 @@ def _style_for_file(name: str) -> str:
     return base.split(".")[0].lower()
 
 
-def add_package(path: str, load_style: bool = True) -> list:
+def add_package(path: str, load_style: bool = True, output: Optional["Output"] = None) -> list:
     """
     Dodaje do projektu pobraną paczkę: .parquet albo .gpkg.zip (rozpakowuje,
     wczytuje wszystkie warstwy). Zwraca listę dodanych warstw.
@@ -443,14 +467,16 @@ def add_package(path: str, load_style: bool = True) -> list:
     else:
         sources = [(path, os.path.basename(path))]
 
+    prefix = output.prefix if output is not None else ""
     for uri, name in sources:
-        vl = QgsVectorLayer(uri, name, "ogr")
+        shown = output.layer_name(name) if output is not None else name
+        vl = QgsVectorLayer(uri, shown, "ogr")
         if not vl.isValid():
             log.error(f"[Paczka] Nie można wczytać warstwy {name}")
             continue
         if load_style:
             apply_style(vl, _style_for_file(name))
-        add_to_project(vl)
+        add_to_project(vl, subgroup=prefix)
         added.append(vl)
         log.success(f"[Paczka] Dodano warstwę: {name}")
     return added

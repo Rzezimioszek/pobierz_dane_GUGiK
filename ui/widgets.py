@@ -15,7 +15,7 @@ from qgis.PyQt.QtCore import Qt, pyqtSignal
 from qgis.PyQt.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QCompleter, QFileDialog, QFrame,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit,
-    QProgressBar, QPushButton, QRadioButton, QTabWidget, QToolButton, QTreeWidget,
+    QProgressBar, QPushButton, QRadioButton, QSizePolicy, QTabWidget, QToolButton, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -58,6 +58,18 @@ def set_state(widget, state: str) -> None:
 
 def _collapsed_key(key: str) -> str:
     return f"{SETTINGS}/ui/collapsed/{key}"
+
+
+class _ElideLabel(QLabel):
+    """Etykieta skracana wielokropkiem, gdy brakuje miejsca (nie poszerza panelu)."""
+
+    def paintEvent(self, e):
+        from qgis.PyQt.QtGui import QPainter
+        p = QPainter(self)
+        p.setPen(self.palette().color(self.foregroundRole()))
+        text = self.fontMetrics().elidedText(self.text(), Qt.TextElideMode.ElideRight, self.width())
+        p.drawText(self.rect(), int(self.alignment()), text)
+        p.end()
 
 
 class _Header(QWidget):
@@ -104,12 +116,14 @@ class StepCard(QFrame):
         self.title = QLabel(title)
         self.title.setObjectName("stepTitle")
         head.addWidget(self.title)
-        head.addStretch(1)
-        self.summary = QLabel()
+        self.summary = _ElideLabel()
         self.summary.setObjectName("stepSummary")
         self.summary.setWordWrap(False)
         self.summary.setMinimumWidth(0)
-        head.addWidget(self.summary, 0)
+        # skrót nie może poszerzać panelu – w wąskim panelu jest przycinany
+        self.summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.summary.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        head.addWidget(self.summary, 1)
         self.header.clicked.connect(self.toggle)
         outer.addWidget(self.header)
         self.content = QWidget()
@@ -151,8 +165,7 @@ class StepCard(QFrame):
         if not text and self.is_collapsed() and self._state == "todo":
             text = tr("do uzupełnienia – rozwiń")
         self.summary.setToolTip(text)
-        # długi skrót przycinamy, żeby nie poszerzał panelu
-        self.summary.setText(text if len(text) <= 38 else text[:36] + "…")
+        self.summary.setText(text)
 
 
 def step_box(number: int, title: str, key: str = "") -> tuple:
@@ -734,6 +747,20 @@ class OutputPicker(QWidget):
         self.chk_style = QCheckBox(tr("Wczytaj domyślny styl"))
         self.chk_style.setChecked(s.value(f"{SETTINGS}/load_style", True, type=bool))
         lay.addWidget(self.chk_style)
+        prow = QHBoxLayout()
+        prow.addWidget(QLabel(tr("Prefiks nazw:")))
+        self.ed_prefix = QLineEdit()
+        self.ed_prefix.setPlaceholderText(tr("np. ProjektA"))
+        self.ed_prefix.setMinimumWidth(60)
+        self.ed_prefix.setClearButtonEnabled(True)
+        self.ed_prefix.setToolTip(tr("Warstwy dostaną nazwy z prefiksem (ProjektA_Dzialki) i trafią "
+                                     "do podgrupy GUGiK/ProjektA. Kolejne pobrania z tym samym "
+                                     "prefiksem dopisują się do tych warstw."))
+        self.ed_prefix.setText(s.value(f"{SETTINGS}/layer_prefix", "", type=str))
+        prow.addWidget(self.ed_prefix, 1)
+        lay.addLayout(prow)
+        self.prefix_hint = hint_label()
+        lay.addWidget(self.prefix_hint)
         self.chk_separate = QCheckBox(tr("Każde pobranie w osobnej warstwie"))
         self.chk_separate.setToolTip(tr("Np. Dzialki_1465_1, Dzialki_1465_2 zamiast dopisywania "
                                         "kolejnych pobrań do jednej warstwy „Dzialki”."))
@@ -778,7 +805,7 @@ class OutputPicker(QWidget):
         self.btn_fields.toggled.connect(self._toggle_fields)
 
         for sig in (self.rb_gpkg.toggled, self.fw_gpkg.fileChanged, self.chk_style.toggled,
-                    self.chk_separate.toggled, self.cmb_package.currentIndexChanged, self.list_attrs.itemChanged):
+                    self.chk_separate.toggled, self.ed_prefix.textChanged, self.cmb_package.currentIndexChanged, self.list_attrs.itemChanged):
             sig.connect(self._save)
         self._save()
 
@@ -793,6 +820,10 @@ class OutputPicker(QWidget):
         s.setValue(f"{SETTINGS}/gpkg_path", path)
         s.setValue(f"{SETTINGS}/load_style", self.chk_style.isChecked())
         s.setValue(f"{SETTINGS}/separate_layers", self.chk_separate.isChecked())
+        prefix = layers.clean_prefix(self.ed_prefix.text())
+        s.setValue(f"{SETTINGS}/layer_prefix", prefix)
+        self.prefix_hint.setText(tr("Np. ") + f"{prefix}_Dzialki" if prefix else "")
+        self.prefix_hint.setVisible(bool(prefix))
         s.setValue(f"{SETTINGS}/powiat_method", self.cmb_package.currentData())
         s.setValue(f"{SETTINGS}/egib_fields", self.selected_attributes() or EGIB_DZIALKI_ATTRIBUTES)
         self.fw_gpkg.setEnabled(self.rb_gpkg.isChecked())
@@ -806,7 +837,8 @@ class OutputPicker(QWidget):
 
     def output(self) -> layers.Output:
         return layers.Output(self.gpkg_path() if self.rb_gpkg.isChecked() else None,
-                             self.chk_style.isChecked(), self.chk_separate.isChecked())
+                             self.chk_style.isChecked(), self.chk_separate.isChecked(),
+                             self.ed_prefix.text())
 
     def selected_attributes(self) -> Optional[list]:
         """None = wszystkie pola (bez propertyName w zapytaniu)."""
