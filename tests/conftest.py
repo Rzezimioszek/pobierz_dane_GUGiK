@@ -26,6 +26,8 @@ def qgis_app():
     if app is None:
         app = QgsApplication([], False)
         app.initQgis()
+    import importlib
+    importlib.import_module(f"{PLUGIN_NAME}.core.uldk").ENABLED = False   # bez prawdziwego ULDK
     yield app
 
 

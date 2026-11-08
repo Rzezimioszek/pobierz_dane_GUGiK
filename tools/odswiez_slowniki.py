@@ -21,12 +21,29 @@ import xml.etree.ElementTree as ET  # nosec – odpowiedź usługi GUGiK, bez DT
 
 import requests
 
-try:
-    PLUGIN_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-except NameError:  # exec() w konsoli QGIS – brak __file__
-    from qgis.core import QgsApplication
-    PLUGIN_DIR = os.path.join(QgsApplication.qgisSettingsDirPath(), "python", "plugins",
-                              "pobierz_dane_GUGiK")
+def _plugin_dir() -> str:
+    """
+    Folder wtyczki: obok tego pliku, a gdy skrypt uruchomiono z edytora/konsoli
+    QGIS (bez __file__ albo z kopii w folderze tymczasowym) – w profilu QGIS.
+    """
+    candidates = []
+    try:
+        candidates.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    except NameError:
+        pass
+    try:
+        from qgis.core import QgsApplication
+        candidates.append(os.path.join(QgsApplication.qgisSettingsDirPath(), "python", "plugins",
+                                       "pobierz_dane_GUGiK"))
+    except ImportError:
+        pass
+    for c in candidates:
+        if os.path.isfile(os.path.join(c, "metadata.txt")) and os.path.isdir(os.path.join(c, "data")):
+            return c
+    raise RuntimeError("Nie znaleziono folderu wtyczki (metadata.txt + data/): " + ", ".join(candidates))
+
+
+PLUGIN_DIR = _plugin_dir()
 
 OUT = os.path.join(PLUGIN_DIR, "data", "jednostki.json.gz")
 PRG_URL = "https://mapy.geoportal.gov.pl/wss/service/PZGIK/PRG/WFS/AdministrativeBoundaries"
@@ -35,6 +52,7 @@ LEVELS = [   # (klucz w pliku, warstwa PRG)
     ("wojewodztwa", "ms:A01_Granice_wojewodztw"),
     ("powiaty", "ms:A02_Granice_powiatow"),
     ("gminy", "ms:A03_Granice_gmin"),
+    ("jednostki", "ms:A05_Granice_jednostek_ewidencyjnych"),
     ("obreby", "ms:A06_Granice_obrebow_ewidencyjnych"),
 ]
 MAX_CHANGE = 0.10    # ±10% rekordów względem poprzedniego słownika = podejrzane
@@ -115,14 +133,31 @@ def suspicious(old: dict, new: dict) -> list:
         a, b = len(old.get(level, {})), len(new.get(level, {}))
         if not b:
             problems.append(f"{level}: pusto")
+        elif not a:
+            continue                       # poziom nowy w słowniku (np. jednostki)
         elif a and abs(b - a) / a > MAX_CHANGE:
             problems.append(f"{level}: {a} → {b}")
     return problems
 
 
+def coverage(data: dict) -> list:
+    """Gminy, dla których słownik nie ma żadnego obrębu (reguła jak w panelu)."""
+    jedn = {t.split(".")[0] for t in data.get("obreby", {})}
+    missing = []
+    for g in data.get("gminy", {}):
+        base, kind = g[:6], g[7:]
+        cand = {f"{base}_4", f"{base}_5"} if kind == "3" else {g}
+        if kind == "1":
+            cand |= {j for j in jedn if j[:4] == g[:4] and j[7:] in ("8", "9")}
+        if not cand & jedn:
+            missing.append(g)
+    return missing
+
+
 def main(argv=None, url: str = PRG_URL, out: str = OUT, log=print) -> int:
     argv = sys.argv[1:] if argv is None else argv
     force = "--force" in argv
+    log(f"Słownik: {out}")
     session = requests.Session()
     new = {"zrodlo": "PRG – " + url, "data": datetime.date.today().isoformat()}
     try:
@@ -136,6 +171,9 @@ def main(argv=None, url: str = PRG_URL, out: str = OUT, log=print) -> int:
 
     old = load(out)
     problems = suspicious(old, new)
+    missing = coverage(new)
+    if missing:
+        problems.append(f"gminy bez obrębów: {len(missing)} (np. {', '.join(missing[:5])})")
     if problems and not force:
         log("NIE zapisano – podejrzane liczby rekordów: " + "; ".join(problems)
             + ". Sprawdź i uruchom z --force.")
@@ -150,7 +188,9 @@ def main(argv=None, url: str = PRG_URL, out: str = OUT, log=print) -> int:
     return 0
 
 
-if __name__ == "__main__":
+if __name__ != "odswiez_slowniki":           # nie przy imporcie w testach
+    # Edytor/konsola QGIS uruchamia plik różnie (exec, __name__ ≠ "__main__"),
+    # więc skrypt startuje zawsze, a sys.exit tylko w wierszu poleceń.
     _code = main([a for a in sys.argv[1:] if a.startswith("--")])
-    if "qgis.utils" not in sys.modules:     # wiersz poleceń; w konsoli QGIS bez sys.exit
+    if "qgis.utils" not in sys.modules:
         sys.exit(_code)

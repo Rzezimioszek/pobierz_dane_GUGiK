@@ -71,6 +71,8 @@ class AdminUnits:
         self.wojewodztwa, self.powiaty, self.gminy = {}, {}, {}
         self.obreby_by_name, self.obreby_teryt_to_info = {}, {}
         self.name_to_teryt = {}
+        self.jednostki, self._obreby_by_jednostka = {}, {}
+        self.date = ""
         self._load()
 
     @classmethod
@@ -89,11 +91,15 @@ class AdminUnits:
             self.powiaty[t] = {"nazwa": name, "parent": t[:2], "geom": None}
         for t, name in data.get("gminy", {}).items():
             self.gminy[t] = {"nazwa": name, "parent": t[:4], "geom": None}
+        # jednostki ewidencyjne (np. 020104_4 „miasto”, 126102_9 „Kraków-Krowodrza”)
+        self.jednostki = dict(data.get("jednostki", {}))
+        self._obreby_by_jednostka = {}
         for t, name in data.get("obreby", {}).items():
-            gmina = t.split(".")[0] if "." in t else t[:8]
+            jedn = t.split(".")[0]
+            self._obreby_by_jednostka.setdefault(jedn, []).append(t)
             self.obreby_by_name.setdefault(name, []).append(t)
-            self.obreby_teryt_to_info[t] = {"nazwa": name, "gmina_code": gmina,
-                                            "powiat_code": t[:4]}
+            self.obreby_teryt_to_info[t] = {"nazwa": name, "gmina_code": self.gmina_for(jedn),
+                                            "powiat_code": t[:4], "jednostka": jedn}
 
         for t, d in self.wojewodztwa.items():
             self.name_to_teryt[f"{d['nazwa']} (województwo {t})"] = t
@@ -144,7 +150,8 @@ class AdminUnits:
         if lvl == "obręb":
             info = self.obreby_teryt_to_info[teryt]
             gm = self.gminy.get(info["gmina_code"], {}).get("nazwa", "?")
-            return f"obręb {info['nazwa']}, gmina {gm}"
+            jedn = self.jednostki.get(info["jednostka"])
+            return f"obręb {info['nazwa']}, gmina {gm}" + (f" ({jedn})" if jedn and jedn != gm else "")
         return ""
 
     def date_text(self) -> str:
@@ -167,7 +174,64 @@ class AdminUnits:
         return fmt, (f"Tego kodu nie ma w słowniku jednostek ({self.date_text()}) – może to nowa "
                      f"jednostka; zostanie sprawdzony w PRG przy pobieraniu.")
 
+    # ------------------------------------------------------------------ gmina ↔ jednostki ewidencyjne
+    #
+    # Obręby należą do jednostek ewidencyjnych, nie wprost do gmin:
+    #   gmina miejska _1 / wiejska _2 → ta sama jednostka (_1 / _2)
+    #   gmina miejsko-wiejska _3     → miasto _4 i obszar wiejski _5
+    #   miasto z dzielnicami/delegaturami (Warszawa, Kraków, Łódź) → jednostki _8/_9 w tym powiecie
+
+    def jednostki_for_gmina(self, gmina: str) -> list:
+        """Kody jednostek ewidencyjnych, w których leżą obręby gminy."""
+        gmina = normalize_teryt(gmina)
+        if len(gmina) != 8 or gmina[6] != "_":
+            return []
+        base, kind = gmina[:6], gmina[7]
+        if kind == "3":
+            return [f"{base}_4", f"{base}_5"]
+        if kind == "1":
+            known = sorted({j for j in list(self._obreby_by_jednostka) + list(self.jednostki)
+                            if j[:4] == gmina[:4] and j[7:] in ("8", "9")})
+            if known and gmina not in self._obreby_by_jednostka:
+                return known
+        return [gmina]
+
+    def gmina_for(self, jednostka: str) -> str:
+        """Kod gminy dla jednostki ewidencyjnej (odwrotność jednostki_for_gmina)."""
+        j = jednostka[:8]
+        if len(j) == 8 and j[7] in ("4", "5"):
+            return f"{j[:6]}_3"
+        if len(j) == 8 and j[7] in ("8", "9"):
+            city = [g for g in self.gminy if g[:4] == j[:4] and g.endswith("_1")]
+            return city[0] if len(city) == 1 else j
+        return j
+
+    def obreby_for_gmina(self, gmina: str) -> list:
+        """[(kod, nazwa)] obrębów gminy ze słownika, w kolejności kodów."""
+        out = []
+        for j in self.jednostki_for_gmina(gmina):
+            out += [(t, self.obreby_teryt_to_info[t]["nazwa"]) for t in self._obreby_by_jednostka.get(j, [])]
+        return sorted(out)
+
+    def add_obreby(self, obreby: list) -> int:
+        """Dopisuje do słownika (na tę sesję) obręby z ULDK; zwraca liczbę nowych."""
+        new = 0
+        for code, name in obreby:
+            if code in self.obreby_teryt_to_info:
+                continue
+            jedn = code.split(".")[0]
+            self.obreby_teryt_to_info[code] = {"nazwa": name, "gmina_code": self.gmina_for(jedn),
+                                               "powiat_code": code[:4], "jednostka": jedn}
+            self._obreby_by_jednostka.setdefault(jedn, []).append(code)
+            self.obreby_by_name.setdefault(name, []).append(code)
+            self.name_to_teryt[f"{name} (obręb {code})"] = code
+            new += 1
+        return new
+
     def gmina_name(self, teryt: str) -> Optional[str]:
+        g = self.gmina_for(teryt.split(".")[0])
+        if g in self.gminy:
+            return self.gminy[g]["nazwa"]
         for key in (teryt[:8], teryt[:6]):
             if key in self.gminy:
                 return self.gminy[key]["nazwa"]

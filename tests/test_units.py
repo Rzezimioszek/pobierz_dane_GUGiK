@@ -58,8 +58,11 @@ class _FakePrg:
         "ms:A01_Granice_wojewodztw": [("02", "dolnośląskie"), ("14", "mazowieckie"), ("12", "małopolskie")],
         "ms:A02_Granice_powiatow": [("1465", "powiat Warszawa"), ("1261", "powiat Kraków"), ("0264", "powiat Wrocław")],
         "ms:A03_Granice_gmin": [("1465011", "Warszawa"), ("1261011", "Kraków"), ("0264011", "Wrocław")],
+        "ms:A05_Granice_jednostek_ewidencyjnych": [("146501_1", "Warszawa"), ("126101_1", "Kraków"),
+                                                   ("026401_1", "Wrocław")],
         "ms:A06_Granice_obrebow_ewidencyjnych": [("146501_1.0001", "Obręb 1"), ("146501_1.0002", "Obręb 2"),
-                                                 ("126101_1.0001", "Podgórze &amp; okolice")],
+                                                 ("126101_1.0001", "Podgórze &amp; okolice"),
+                                                 ("026401_1.0001", "Wrocław-1")],
     }
 
     def __init__(self):
@@ -116,9 +119,10 @@ def test_refresh_script_pages_normalizes_and_reports(tmp_path, monkeypatch):
         data = json.load(f)
     assert data["gminy"] == {"146501_1": "Warszawa", "126101_1": "Kraków", "026401_1": "Wrocław"}
     assert data["obreby"]["126101_1.0001"] == "Podgórze & okolice" and data["data"]
-    assert {r["startIndex"] for r in srv.requests} == {"0", "2"}
+    assert {r["startIndex"] for r in srv.requests} == {"0", "2", "4"}   # 4 obręby, strony po 2
     assert all(r["propertyName"] == "ms:JPT_KOD_JE,ms:JPT_NAZWA_" for r in srv.requests)
-    assert any(line.startswith("obreby: 3 (nowe 3") for line in logs)
+    assert any(line.startswith("obreby: 4 (nowe 4") for line in logs)
+    assert data["jednostki"]["026401_1"] == "Wrocław"
 
 
 def test_refresh_script_refuses_suspicious_drop(tmp_path, monkeypatch):
@@ -153,3 +157,83 @@ def test_refresh_script_reports_service_exception():
         assert "bad" in str(exc)
     else:
         raise AssertionError("brak wyjątku")
+
+
+def test_refresh_script_refuses_gmina_without_obreby(tmp_path, monkeypatch):
+    mod = _script(monkeypatch)
+    monkeypatch.setitem(_FakePrg.DATA, "ms:A06_Granice_obrebow_ewidencyjnych",
+                        [("146501_1.0001", "Obręb 1")])
+    srv = _FakePrg()
+    logs = []
+    try:
+        assert mod.main([], url=srv.url, out=str(tmp_path / "j.json.gz"), log=logs.append) == 2
+    finally:
+        srv.close()
+    assert "gminy bez obrębów: 2" in logs[-1]
+    assert mod.coverage({"gminy": {"020104_3": "x", "126101_1": "Kraków"},
+                         "obreby": {"020104_5.0001": "a", "126102_9.0001": "b"}}) == []
+
+
+# ---------------------------------------------------------------- gmina ↔ obręby
+
+def test_obreby_of_urban_rural_gmina_and_big_cities():
+    u = units_mod().AdminUnits.instance()
+    assert all(u.obreby_for_gmina(g) for g in u.gminy)            # żadna gmina bez obrębów
+    mw = next(g for g in u.gminy if g.endswith("_3"))
+    assert set(u.jednostki_for_gmina(mw)) == {mw[:6] + "_4", mw[:6] + "_5"}
+    assert {c.split(".")[0][-1] for c, _ in u.obreby_for_gmina(mw)} <= {"4", "5"}
+    krakow = u.jednostki_for_gmina("126101_1")
+    assert krakow and all(j.endswith("_9") for j in krakow)
+    assert u.gmina_for("126102_9") == "126101_1" and u.gmina_for(mw[:6] + "_5") == mw
+    obr = u.obreby_for_gmina(mw)[0][0]
+    assert u.gmina_name(obr) == u.gminy[mw]["nazwa"]
+
+
+def test_uldk_parse_and_task():
+    uldk = importlib.import_module(f"{PLUGIN_NAME}.core.uldk")
+    text = "0\n022602_1.0001|Złotoryja (miasto)|Obręb 1\n022602_1.0002|Złotoryja (miasto)|Obręb 2\n"
+    assert uldk.parse_regions(text) == [("022602_1.0001", "Obręb 1", "Złotoryja (miasto)"),
+                                        ("022602_1.0002", "Obręb 2", "Złotoryja (miasto)")]
+    assert uldk.parse_regions("-1 brak wyników") == []
+    try:
+        uldk.parse_regions("<html>błąd</html>")
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError
+
+    class H(BaseHTTPRequestHandler):
+        seen = []
+
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+            H.seen.append(q)
+            body = ("0\n" + q["id"] + ".0001|Gmina (miasto)|A\n") if q["id"].endswith("_4") else "-1 brak"
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(body.encode("utf-8"))
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        tasks = importlib.import_module(f"{PLUGIN_NAME}.core.tasks")
+        monkey = uldk.ULDK_URL
+        uldk.ULDK_URL = f"http://127.0.0.1:{srv.server_port}/"
+        try:
+            t = tasks.RegionsTask("020104_3", ["020104_4", "020104_5"])
+            # regions() bierze adres domyślny z chwili wywołania
+            orig = uldk.regions
+            uldk.regions = lambda s, j, url=uldk.ULDK_URL, timeout=30: orig(s, j, url, timeout)
+            try:
+                assert t.run()
+            finally:
+                uldk.regions = orig
+        finally:
+            uldk.ULDK_URL = monkey
+    finally:
+        srv.shutdown()
+    assert t.obreby == [("020104_4.0001", "A")] and t.errors == []
+    assert H.seen[0]["request"] == "GetRegionById" and H.seen[0]["result"] == "id,commune,region"

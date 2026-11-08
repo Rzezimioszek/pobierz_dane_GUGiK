@@ -32,10 +32,13 @@ class TerytScopeWidget(QWidget):
     """
 
     teryt_changed = pyqtSignal(str)
+    gmina_selected = pyqtSignal(str)    # wybrano gminę – można doczytać jej obręby
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, with_obreby: bool = False):
         super().__init__(parent)
+        self.with_obreby = with_obreby
         self._blocking = False          # guard przed rekurencją sygnałów
+        self._obreby_gmina = ""         # gmina, której obręby są na liście
         self._name_to_teryt: dict = {}
         self._wojewodztwa: dict = {}
         self._powiaty: dict = {}
@@ -77,6 +80,23 @@ class TerytScopeWidget(QWidget):
         row3.addWidget(self.cmb_gmina, 1)
         lay.addLayout(row3)
 
+        # Wiersz 3b: obręb (lista ze słownika, potem aktualna z ULDK)
+        self.row_obreb = QWidget()
+        rowo = QHBoxLayout(self.row_obreb)
+        rowo.setContentsMargins(0, 0, 0, 0)
+        rowo.addWidget(QLabel("Obręb:"))
+        self.cmb_obreb = QComboBox()
+        self.cmb_obreb.setEnabled(False)
+        self.cmb_obreb.addItem("- cała gmina -", None)
+        rowo.addWidget(self.cmb_obreb, 1)
+        lay.addWidget(self.row_obreb)
+        self.lbl_obreby = QLabel("")
+        self.lbl_obreby.setObjectName("hint")
+        self.lbl_obreby.setWordWrap(True)
+        self.lbl_obreby.setVisible(False)
+        lay.addWidget(self.lbl_obreby)
+        self.row_obreb.setVisible(self.with_obreby)
+
         # Wiersz 4: pole tekstowe z completerem
         row4 = QHBoxLayout()
         row4.addWidget(QLabel("TERYT / nazwa:"))
@@ -87,13 +107,15 @@ class TerytScopeWidget(QWidget):
 
         # Wiersz 5: etykieta informacyjna (błąd lub aktywny kod)
         self.lbl_info = QLabel("")
-        self.lbl_info.setStyleSheet("color: var(--color-text-danger, red); font-size: 11px;")
+        self.lbl_info.setStyleSheet("color: #c62828;")
+        self.lbl_info.setVisible(False)
         lay.addWidget(self.lbl_info)
 
         # Sygnały
         self.cmb_woj.currentIndexChanged.connect(self._on_woj_changed)
         self.cmb_pow.currentIndexChanged.connect(self._on_pow_changed)
         self.cmb_gmina.currentIndexChanged.connect(self._on_gmina_changed)
+        self.cmb_obreb.currentIndexChanged.connect(self._on_obreb_changed)
         self.txt_teryt.textChanged.connect(self._on_text_changed)
 
     # ------------------------------------------------------------------
@@ -157,6 +179,8 @@ class TerytScopeWidget(QWidget):
         raw = raw.split(" ")[-1].replace(")", "").strip() if " " in raw else raw
         if raw:
             return raw
+        if obreb := self.cmb_obreb.currentData():
+            return obreb
         if gmina := self.cmb_gmina.currentData():
             return gmina
         if pow_ := self.cmb_pow.currentData():
@@ -183,6 +207,7 @@ class TerytScopeWidget(QWidget):
         self.cmb_gmina.addItem("- Wybierz -", None)
         self.lbl_info.setText("")
         self._blocking = False
+        self._clear_obreby()
 
     # ------------------------------------------------------------------
     # Obsługa sygnałów – kaskada comboboxes
@@ -201,6 +226,7 @@ class TerytScopeWidget(QWidget):
         self.cmb_gmina.addItem("- Wybierz -", None)
         self.cmb_gmina.setEnabled(False)
         self._blocking = False
+        self._clear_obreby()
 
         if woj_id:
             self.cmb_pow.setEnabled(True)
@@ -223,6 +249,7 @@ class TerytScopeWidget(QWidget):
         self.cmb_gmina.clear()
         self.cmb_gmina.addItem("- Wybierz -", None)
         self._blocking = False
+        self._clear_obreby()
 
         if pow_id:
             self.cmb_gmina.setEnabled(True)
@@ -241,11 +268,56 @@ class TerytScopeWidget(QWidget):
         if self._blocking:
             return
         gmina_id = self.cmb_gmina.currentData()
+        self._clear_obreby()
         if gmina_id:
             self._set_text_silent(gmina_id)
+            if self.with_obreby:
+                self.gmina_selected.emit(gmina_id)
         else:
             pow_id = self.cmb_pow.currentData()
             self._set_text_silent(pow_id or "")
+
+    def _on_obreb_changed(self):
+        if self._blocking:
+            return
+        code = self.cmb_obreb.currentData() or self.cmb_gmina.currentData() or ""
+        self._set_text_silent(code)
+        self.teryt_changed.emit(code)
+
+    # ------------------------------------------------------------------ obręby
+
+    def _clear_obreby(self) -> None:
+        self._obreby_gmina = ""
+        self._blocking, was = True, self._blocking
+        self.cmb_obreb.clear()
+        self.cmb_obreb.addItem("- cała gmina -", None)
+        self.cmb_obreb.setEnabled(False)
+        self._blocking = was
+        self.lbl_obreby.setVisible(False)
+
+    def set_obreby(self, gmina: str, obreby: list, note: str = "") -> None:
+        """
+        Lista obrębów gminy [(kod, nazwa)]. Wywoływane najpierw ze słownikiem,
+        potem z aktualną listą z ULDK – wybrany obręb zostaje, jeśli nadal jest.
+        """
+        if gmina != self.cmb_gmina.currentData():
+            return                       # odpowiedź dla gminy, która już nie jest wybrana
+        keep = self.cmb_obreb.currentData()
+        self._obreby_gmina = gmina
+        was = self._blocking
+        self._blocking = True
+        self.cmb_obreb.clear()
+        self.cmb_obreb.addItem("- cała gmina -", None)
+        for code, name in obreby:
+            self.cmb_obreb.addItem(f"{name} ({code})", code)
+        self.cmb_obreb.setEnabled(bool(obreby))
+        idx = self.cmb_obreb.findData(keep) if keep else 0
+        self.cmb_obreb.setCurrentIndex(max(idx, 0))
+        self._blocking = was
+        self.lbl_obreby.setText(note)
+        self.lbl_obreby.setVisible(bool(note))
+        if keep and idx < 0:             # wybrany obręb zniknął z aktualnej listy
+            self._on_obreb_changed()
 
     def _on_completer_activated(self, text: str):
         """Wybór z listy podpowiedzi → wpisz TERYT i synchronizuj kaskadę."""
@@ -282,6 +354,7 @@ class TerytScopeWidget(QWidget):
     def _validate(self, raw: str):
         if not raw:
             self.lbl_info.setText("")
+            self.lbl_info.setVisible(False)
             return
         valid = (
             raw in self._wojewodztwa
@@ -292,6 +365,7 @@ class TerytScopeWidget(QWidget):
             or "*" in raw
         )
         self.lbl_info.setText("" if valid else "Kod TERYT może być nieprawidłowy")
+        self.lbl_info.setVisible(not valid)
 
     def _sync_combos_from_teryt(self, teryt: str):
         """Synchronizuje kaskadę comboboxes z podanym kodem TERYT."""
@@ -307,13 +381,22 @@ class TerytScopeWidget(QWidget):
                 if idx >= 0:
                     self.cmb_pow.setCurrentIndex(idx)
                     self._reload_gmina(teryt[:4])
-            if len(teryt) >= 6:
-                t = teryt[:7] if len(teryt) >= 7 else teryt
-                idx = self.cmb_gmina.findData(t)
-                if idx >= 0:
+            if len(teryt) >= 8:
+                gmina = self.gmina_of(teryt)
+                idx = self.cmb_gmina.findData(gmina)
+                if idx >= 0 and self.cmb_gmina.currentIndex() != idx:
                     self.cmb_gmina.setCurrentIndex(idx)
+                    self._clear_obreby()
+                    if self.with_obreby:
+                        self.gmina_selected.emit(gmina)
+                if "." in teryt:
+                    idx = self.cmb_obreb.findData(teryt)
+                    if idx >= 0:
+                        self.cmb_obreb.setCurrentIndex(idx)
         finally:
             self._blocking = False
+
+    gmina_of = staticmethod(lambda teryt: teryt[:8])   # nadpisywane przez panel (jednostki _4/_5/_8/_9)
 
     def _reload_pow(self, woj_id: str):
         self.cmb_pow.clear()

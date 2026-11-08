@@ -9,7 +9,7 @@ Części panelu:
 from dataclasses import dataclass, field
 from typing import Optional
 
-from qgis.core import QgsSettings
+from qgis.core import QgsApplication, QgsSettings
 from qgis.gui import QgsFileWidget, QgsMapLayerComboBox
 from qgis.PyQt.QtCore import Qt, pyqtSignal
 from qgis.PyQt.QtWidgets import (
@@ -20,7 +20,7 @@ from qgis.PyQt.QtWidgets import (
 )
 
 from . import tr
-from ..core import catalog, layers
+from ..core import catalog, layers, tasks, uldk
 from ..core.catalog import EGIB_DZIALKI_ATTRIBUTES
 from ..qt_compat import LAYER_FILTER_POLYGON
 from ..skorowidz_services import SKOROWIDZ_BY_LABEL, SKOROWIDZ_SERVICES
@@ -465,6 +465,8 @@ class ScopePicker(QWidget):
     def __init__(self, units, parent=None):
         super().__init__(parent)
         self.units = units
+        self._uldk_cache = {}     # gmina → (obręby, opis) – na czas sesji
+        self._uldk_tasks = []
         self.drawn_rect = None
         self.drawn_polygon = None   # QgsGeometry w układzie mapy
         lay = QVBoxLayout(self)
@@ -496,10 +498,12 @@ class ScopePicker(QWidget):
     def _tab_unit(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
-        self.teryt = TerytScopeWidget()
+        self.teryt = TerytScopeWidget(with_obreby=True)
+        self.teryt.gmina_of = lambda t: self.units.gmina_for(t.split(".")[0])
         self.teryt.inject_scope_data(self.units.wojewodztwa, self.units.powiaty,
                                      self.units.gminy, self.units.name_to_teryt)
         self.teryt.teryt_changed.connect(self._unit_changed)
+        self.teryt.gmina_selected.connect(self._load_obreby)
         lay.addWidget(self.teryt)
         self.unit_hint = hint_label()
         self.unit_hint.setVisible(False)
@@ -518,6 +522,53 @@ class ScopePicker(QWidget):
         lay.addLayout(row)
         lay.addStretch(1)
         return w
+
+    # ------------------------------------------------------------------ obręby gminy
+
+    def _load_obreby(self, gmina: str) -> None:
+        """Najpierw lista ze słownika (od razu), potem aktualna z ULDK w tle."""
+        if gmina in self._uldk_cache:
+            self.teryt.set_obreby(gmina, *self._uldk_cache[gmina])
+            return
+        known = self.units.obreby_for_gmina(gmina)
+        if not uldk.ENABLED:
+            self.teryt.set_obreby(gmina, known, tr("Obręby ze słownika ") + self.units.date_text() + ".")
+            return
+        self.teryt.set_obreby(gmina, known, tr("Obrębów ze słownika: ") + str(len(known))
+                              + tr(" – sprawdzam aktualną listę w ULDK…"))
+        task = tasks.RegionsTask(gmina, self.units.jednostki_for_gmina(gmina))
+        task.done.connect(self._uldk_done)
+        self._uldk_tasks.append(task)
+        QgsApplication.taskManager().addTask(task)
+
+    def _uldk_done(self, gmina: str, obreby: list, errors: list) -> None:
+        self._uldk_tasks = [t for t in self._uldk_tasks if t.key != gmina]
+        if not obreby:
+            known = self.units.obreby_for_gmina(gmina)
+            note = (tr("ULDK nie odpowiada – lista ze słownika ") if errors
+                    else tr("ULDK nie zwrócił obrębów – lista ze słownika ")) + self.units.date_text() + "."
+            self.teryt.set_obreby(gmina, known, note)
+            return
+        old = {c for c, _ in self.units.obreby_for_gmina(gmina)}
+        added = len({c for c, _ in obreby} - old)
+        gone = len(old - {c for c, _ in obreby})
+        self.units.add_obreby(obreby)
+        note = tr("Obrębów: ") + str(len(obreby)) + tr(" – aktualna lista z ULDK")
+        if added or gone:
+            note += f" ({added} " + tr("nowych") + f", {gone} " + tr("nieaktualnych w słowniku") + ")"
+        if errors:
+            note += tr("; część jednostek bez odpowiedzi")
+        self._uldk_cache[gmina] = (obreby, note + ".")
+        self.teryt.set_obreby(gmina, obreby, note + ".")
+
+    def cancel_tasks(self) -> None:
+        for t in self._uldk_tasks:
+            try:
+                t.done.disconnect(self._uldk_done)
+                t.cancel()
+            except (TypeError, RuntimeError):
+                pass
+        self._uldk_tasks = []
 
     def _unit_changed(self, *_):
         t = normalize_teryt(self.teryt.get_resolved_teryt())

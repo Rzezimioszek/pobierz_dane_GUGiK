@@ -624,3 +624,37 @@ def test_obreb_code_typed_instead_of_name(dock):
     assert "bez sprawdzania" in dock.scope.obreb_hint.text()
     dock.scope.txt_obreb.setText("Nieistniejący obręb xyz")
     assert "wpisz jego kod" in dock.hint.text()
+
+
+def test_gmina_lists_obreby_and_uldk_updates_them(dock):
+    u = dock.units
+    mw = next(g for g in u.gminy if g.endswith("_3"))
+    w = dock.scope.teryt
+    dock.sources.select_labels(["dzialki (EGIB)"])
+    dock.scope.tabs.setCurrentIndex(ScopeTab.UNIT)
+    w.set_teryt(mw)                                   # wpisany kod gminy → kaskada + obręby
+    assert w.cmb_gmina.currentData() == mw
+    known = u.obreby_for_gmina(mw)
+    assert w.cmb_obreb.count() == len(known) + 1 and w.cmb_obreb.isEnabled()
+    w.cmb_obreb.setCurrentIndex(1)
+    assert dock.scope.scope().teryt == known[0][0]
+    # aktualna lista z ULDK: jeden nowy obręb, wybrany zostaje
+    fresh = known + [(mw[:6] + "_5.9999", "Nowy obręb")]
+    dock.scope._uldk_done(mw, fresh, [])
+    assert w.cmb_obreb.count() == len(fresh) + 1 and w.cmb_obreb.currentData() == known[0][0]
+    assert "ULDK" in w.lbl_obreby.text() and "1 nowych" in w.lbl_obreby.text()
+    assert u.check(mw[:6] + "_5.9999") == ("obręb", "")      # znany już w tej sesji
+    # ULDK nie odpowiada → zostaje słownik z uwagą
+    dock.scope._uldk_cache.clear()
+    dock.scope._uldk_done(mw, [], ["020104_4: brak połączenia"])
+    assert "nie odpowiada" in w.lbl_obreby.text()
+
+
+def test_typed_obreb_code_selects_whole_cascade(dock):
+    u = dock.units
+    code = next(c for c in u.obreby_teryt_to_info if c.split(".")[0].endswith("_9"))   # Kraków/Łódź
+    w = dock.scope.teryt
+    dock.scope.tabs.setCurrentIndex(ScopeTab.UNIT)
+    w.txt_teryt.setText(code)
+    assert w.cmb_gmina.currentData() == u.gmina_for(code.split(".")[0])
+    assert w.cmb_obreb.currentData() == code

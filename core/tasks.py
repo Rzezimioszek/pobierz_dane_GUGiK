@@ -246,3 +246,35 @@ class SkorowidzSearchTask(QgsTask):
     def finished(self, ok: bool) -> None:
         _close(self.client.session)
         self.done.emit(self.features if ok else [], self.errors)
+
+
+class RegionsTask(QgsTask):
+    """
+    Aktualna lista obrębów z ULDK dla jednostek ewidencyjnych gminy.
+    `done(key, obreby: list[(kod, nazwa)], errors: list[str])` w głównym wątku.
+    """
+    done = pyqtSignal(str, list, list)
+
+    def __init__(self, key: str, jednostki: list):
+        super().__init__(f"PD_GUGiK – obręby {key}", QgsTask.Flag.CanCancel)
+        self.key = key
+        self.jednostki = jednostki
+        self.session = net.make_session()
+        self.obreby, self.errors = [], []
+
+    def run(self) -> bool:
+        from . import uldk
+        for j in self.jednostki:
+            if self.isCanceled():
+                return False
+            try:
+                self.obreby += [(code, name) for code, name, _ in uldk.regions(self.session, j)]
+            except Exception as exc:
+                log.warning(f"[ULDK] {j}: {exc}")
+                self.errors.append(f"{j}: {net.friendly(exc)}")
+        return True
+
+    def finished(self, result: bool) -> None:
+        _close(self.session)
+        if result:
+            self.done.emit(self.key, sorted(set(self.obreby)), self.errors)

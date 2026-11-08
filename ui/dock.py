@@ -175,6 +175,7 @@ class PD_GUGiKDock(QDockWidget):
         self._raster_queue = []
         if self._sheets is not None:
             self._sheets.close()
+        self.scope.cancel_tasks()
         for attr in ("_task", "_boundary_task"):
             t = getattr(self.eziudp, attr, None)
             if t is not None:
