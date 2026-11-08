@@ -15,6 +15,7 @@ tak jak w QGIS i GeoServerze. Brak srsName = konwencja usług GUGiK (N/E).
 
 Bez QgsOgcUtils.geometryFromGML: dla GML 3.2 z srsName URN zamyka QGIS 4.
 """
+import re
 import os
 import warnings
 from functools import lru_cache
@@ -35,6 +36,7 @@ except ImportError:  # pragma: no cover – GDAL jest częścią każdej instala
     ogr = osr = None
 
 WFS2_NS = "http://www.opengis.net/wfs/2.0"
+GML32 = "http://www.opengis.net/gml/3.2"
 GEOMETRY_PROPERTIES = ("geom", "msGeometry", "geometry", "GEOMETRIA")
 
 
@@ -137,11 +139,19 @@ def parse_features(gml: str) -> list:
                     attrs[name] = elem.text()
             prop = prop.nextSibling()
         if geom is not None:
-            features.append({"geom": geom.asWkt(), "attrs": attrs})
+            fid = feature.attributeNS(GML32, "id") or feature.attribute("gml:id") \
+                or feature.attributeNS("http://www.opengis.net/gml", "id")
+            features.append({"geom": geom.asWkt(), "attrs": attrs, "id": fid})
     return features
 
 
 # ---------------------------------------------------------------- odczyt jako warstwa OGR
+
+def number_matched(text: str) -> int:
+    """numberMatched z nagłówka odpowiedzi WFS 2.0; -1 gdy brak albo „unknown”."""
+    m = re.search(r'numberMatched="(\d+)"', text[:3000])
+    return int(m.group(1)) if m else -1
+
 
 def service_exception(text: str) -> str:
     """Treść ows:ExceptionReport z odpowiedzi serwera albo ''."""

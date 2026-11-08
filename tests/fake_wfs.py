@@ -25,11 +25,15 @@ class FakeWfs:
     """
     `total` obiektów, stronicowanie po startIndex/count.
     `fail_filters`: fragmenty filtra, dla których serwer odpowiada 500.
+    `exception_filters`: fragmenty filtra → ExceptionReport z kodem 200 (jak MapServer).
+    `max_count`: serwer oddaje najwyżej tyle obiektów na stronę (limit po stronie usługi).
     """
 
-    def __init__(self, total: int = 1005, fail_filters=()):
+    def __init__(self, total: int = 1005, fail_filters=(), exception_filters=(), max_count=None):
         self.total = total
         self.fail_filters = list(fail_filters)
+        self.exception_filters = list(exception_filters)
+        self.max_count = max_count
         self.requests = []
         outer = self
 
@@ -44,7 +48,17 @@ class FakeWfs:
                     self.send_response(500)
                     self.end_headers()
                     return
+                if any(f in q.get("filter", "") for f in outer.exception_filters):
+                    data = ('<ows:ExceptionReport xmlns:ows="http://www.opengis.net/ows/1.1">'
+                            '<ows:Exception><ows:ExceptionText>msWFSGetFeature(): błędny filtr'
+                            '</ows:ExceptionText></ows:Exception></ows:ExceptionReport>').encode("utf-8")
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
                 start, count = int(q.get("startIndex", 0)), int(q.get("count", 1000))
+                if outer.max_count:
+                    count = min(count, outer.max_count)
                 ids = range(start, min(start + count, outer.total))
                 body = HEADER.format(matched=outer.total, returned=len(ids)) + \
                     "".join(parcel(i) for i in ids) + "</wfs:FeatureCollection>"

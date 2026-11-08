@@ -365,6 +365,8 @@ def _read_direct(
                 if not geom_type:
                     geom_type = QgsWkbTypes.displayString(QgsWkbTypes.multiType(geom.wkbType()))
                 attrs = dict(f["attrs"])
+                if f.get("id"):
+                    attrs.setdefault("gml_id", f["id"])   # jak w dostawcy WFS QGIS – do usuwania duplikatów
                 attrs["teryt_powiatu"] = teryt
                 attrs["zrodlo_wfs"] = wfs_url
                 features.append({"geom": geom, "attrs": attrs})
@@ -474,7 +476,11 @@ class EziudpWfsTask(QgsTask):
         # Główny wątek: dopiero tu powstają warstwy w projekcie
         for item in self._pending:
             try:
-                layers.write(item["features"], item["name"], item["geom_type"],
+                # Kolejne pobranie tego samego powiatu (np. inna gmina) dopisuje się
+                # do warstwy; gml_id pomija obiekty, które już w niej są.
+                first = item["features"][0]["attrs"] if item["features"] else {}
+                unique = "gml_id" if first.get("gml_id") not in (None, "") else None
+                layers.write(item["features"], item["name"], item["geom_type"], unique,
                              style=item["style"], load_style=self.output.load_style,
                              fields=item["fields"], gpkg_path=self.output.gpkg_path,
                              info=item.get("info"), group=self.output.prefix)
@@ -605,16 +611,6 @@ class EziudpWfsTask(QgsTask):
         style_name = (cfg.get("style") or getattr(harmonizer, "STYLE", None)
                       or base_layer_name)
         mem_layer_name = self.output.layer_name(f"{base_layer_name}_{teryt}")
-
-        # Warstwa już jest w projekcie (np. ponowne uruchomienie) – pomijamy
-        if mem_layer_name in self._existing_names:
-            QgsMessageLog.logMessage(
-                f"[EziudpWfsTask] Warstwa '{mem_layer_name}' już istnieje – pomijam.",
-                LOG_TAG, Qgis.MessageLevel.Info,
-            )
-            report.success = True
-            report.wfs_version = "cached"
-            return report
 
         # Próbuj WFS 2.0, fallback na 1.1
         wfs_vl, version = _try_wfs_layer(

@@ -84,10 +84,20 @@ class WfsDownloadTask(QgsTask):
             if self.isCanceled():
                 self.result.canceled = True
                 break
-            page = gml.parse_features(
-                self.client.page(query.filter_xml, start, PAGE_SIZE, self.attributes))
+            text = self.client.page(query.filter_xml, start, PAGE_SIZE, self.attributes)
+            page = gml.parse_features(text)
             features.extend(page)
-            self._report(qi, n, start + len(page))
+            got = start + len(page)
+            self._report(qi, n, got)
+            if not page:
+                break
+            matched = gml.number_matched(text)
+            if matched >= 0:
+                # serwer może oddawać mniej niż PAGE_SIZE na stronę – liczy się numberMatched
+                if got >= matched:
+                    break
+                start = got
+                continue
             if len(page) < PAGE_SIZE:
                 break
             start += PAGE_SIZE

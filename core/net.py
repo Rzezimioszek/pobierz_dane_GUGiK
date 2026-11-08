@@ -25,28 +25,62 @@ except ImportError:  # bardzo stare środowiska
     RemoteDisconnected = ConnectionError
 
 
+def _proxy_url(scheme: str, host: str, port, user: str, secret: str) -> str:
+    auth = ""
+    if user:
+        auth = urllib.parse.quote(user, safe="")
+        if secret:
+            auth += ":" + urllib.parse.quote(secret, safe="")
+        auth += "@"
+    return f"{scheme}://{auth}{host}" + (f":{port}" if port else "")
+
+
 def _qgis_proxies() -> dict:
-    """Proxy z ustawień QGIS w formacie `requests`; {} gdy wyłączone."""
+    """
+    Proxy z ustawień sieci QGIS w formacie `requests`; {} gdy wyłączone albo
+    „systemowe” (wtedy `requests` sam czyta proxy systemu / zmiennych środowiska).
+    Najpierw QgsNetworkAccessManager (tak samo w QGIS 3.40 i 4), a gdy go
+    nie ma – wpisy proxy/* w ustawieniach.
+    """
+    try:
+        from qgis.core import QgsNetworkAccessManager
+        from qgis.PyQt.QtNetwork import QNetworkProxy
+        nam = QgsNetworkAccessManager.instance()
+        proxy = nam.fallbackProxy()
+        kind = proxy.type()
+        if kind in (QNetworkProxy.ProxyType.HttpProxy, QNetworkProxy.ProxyType.HttpCachingProxy,
+                    QNetworkProxy.ProxyType.Socks5Proxy) and proxy.hostName():
+            scheme = "socks5h" if kind == QNetworkProxy.ProxyType.Socks5Proxy else "http"
+            if scheme == "socks5h":
+                try:
+                    import socks  # noqa: F401 – PySocks, potrzebny requests do SOCKS
+                except ImportError:
+                    log.warning("[NET] Proxy SOCKS5 w QGIS, ale brak modułu PySocks – "
+                                "pobieranie bez proxy (zainstaluj pakiet pysocks).")
+                    return {}
+            url = _proxy_url(scheme, proxy.hostName(), proxy.port() or "", proxy.user(), proxy.password())
+            proxies = {"http": url, "https": url}
+            excluded = [u for u in nam.excludeList() if u]
+            if excluded:
+                hosts = [urllib.parse.urlparse(u).hostname or u for u in excluded]
+                proxies["no_proxy"] = ",".join(hosts)
+            return proxies
+        return {}
+    except Exception as exc:  # ustawienia nie mogą zablokować pobierania
+        log.warning(f"[NET] Nie udało się odczytać proxy QGIS z menedżera sieci: {exc}")
     try:
         from qgis.core import QgsSettings
         s = QgsSettings()
         if not s.value("proxy/proxyEnabled", False, type=bool):
             return {}
         host = s.value("proxy/proxyHost", "", type=str)
-        port = s.value("proxy/proxyPort", "", type=str)
         if not host:
             return {}
-        user = s.value("proxy/proxyUser", "", type=str)
-        password = s.value("proxy/proxyPassword", "", type=str)
-        auth = ""
-        if user:
-            auth = urllib.parse.quote(user, safe="")
-            if password:
-                auth += ":" + urllib.parse.quote(password, safe="")
-            auth += "@"
-        url = f"http://{auth}{host}" + (f":{port}" if port else "")
+        url = _proxy_url("http", host, s.value("proxy/proxyPort", "", type=str),
+                         s.value("proxy/proxyUser", "", type=str),
+                         s.value("proxy/proxyPassword", "", type=str))
         return {"http": url, "https": url}
-    except Exception as exc:  # ustawienia nie mogą zablokować pobierania
+    except Exception as exc:
         log.warning(f"[NET] Nie udało się odczytać proxy z ustawień QGIS: {exc}")
         return {}
 

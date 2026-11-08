@@ -290,3 +290,54 @@ def test_output_from_settings_reads_prefix():
         assert out.prefix == "ProjektC" and out.layer_name("Dzialki_RCN_1465") == "ProjektC_Dzialki_RCN_1465"
     finally:
         QgsSettings().remove("pobierz_dane_GUGiK/layer_prefix")
+
+
+def test_server_page_limit_below_page_size_still_gets_everything():
+    tasks, filters = mod("tasks"), mod("filters")
+    srv = FakeWfs(total=1250, max_count=500)
+    try:
+        task = tasks.WfsDownloadTask(_source(srv.url), [filters.bbox("geom", 0, 0, 1, 1)])
+        task.run()
+    finally:
+        srv.close()
+    assert len(task.result.features) == 1250
+    assert [int(r["startIndex"]) for r in srv.requests] == [0, 500, 1000]
+
+
+def test_exception_report_with_http_200_is_an_error_not_empty_result():
+    tasks = mod("tasks")
+    srv = FakeWfs(total=10, exception_filters=["ZLY"])
+    try:
+        task = tasks.WfsDownloadTask(_source(srv.url), [tasks.Query("<fes:Filter>ZLY</fes:Filter>", label="zły")])
+        task.run()
+    finally:
+        srv.close()
+    assert task.result.features == [] and task.result.errors
+    assert "błędny filtr" in task.result.errors[0][1]
+
+
+def test_gml_feature_id_is_kept_outside_attributes():
+    from conftest import fixture_text
+    gml = mod("gml")
+    feats = gml.parse_features(fixture_text("prg_ulice_mixed.gml"))
+    assert all("id" in f for f in feats) and "gml_id" not in feats[0]["attrs"]
+
+
+def test_proxy_from_qgis_network_manager(monkeypatch):
+    from qgis.core import QgsNetworkAccessManager
+    from qgis.PyQt.QtNetwork import QNetworkProxy
+    net = mod("net")
+    nam = QgsNetworkAccessManager.instance()
+    old = nam.fallbackProxy()
+    try:
+        nam.setFallbackProxyAndExcludes(QNetworkProxy(QNetworkProxy.ProxyType.HttpProxy, "proxy.urzad.pl",
+                                                      8080, "jan kowalski", "p@ss"),
+                                        ["https://intranet.urzad.pl"], [])
+        proxies = net._qgis_proxies()
+        assert proxies["https"] == "http://jan%20kowalski:p%40ss@proxy.urzad.pl:8080"
+        assert proxies["no_proxy"] == "intranet.urzad.pl"
+        assert net.make_session().proxies["http"] == proxies["http"]
+        nam.setFallbackProxyAndExcludes(QNetworkProxy(QNetworkProxy.ProxyType.DefaultProxy), [], [])
+        assert net._qgis_proxies() == {}
+    finally:
+        nam.setFallbackProxyAndExcludes(old, [], [])

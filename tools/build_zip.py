@@ -10,7 +10,7 @@ import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NAME = os.path.basename(ROOT)
-SKIP_DIRS = {"tests", "tools", "dist", "__pycache__", ".git", ".github", ".pytest_cache", "_sync"}
+SKIP_DIRS = {"tests", "tools", "docs", "dist", "__pycache__", ".git", ".github", ".pytest_cache", "_sync"}
 SKIP_FILES = {".gitignore", "pylintrc", ".flake8"}
 
 

@@ -7,7 +7,7 @@ try:
 except ImportError:
     from xml.etree import ElementTree as ET  # nosec
 
-from . import log, net
+from . import gml, log, net
 
 PAGE_SIZE = 1000
 
@@ -63,4 +63,10 @@ class WfsClient:
                 props.append(self.geom_field)
             params["propertyName"] = ",".join(props)
         log.info(f"[WFS] {self.typename} start={start_index} count={count}")
-        return net.get(self.session, self.url, params, timeout=180).text
+        text = net.get(self.session, self.url, params, timeout=180).text
+        # MapServer zgłasza błąd zapytania jako ExceptionReport z kodem HTTP 200 –
+        # bez tej kontroli wyglądałoby to jak „brak obiektów” i ucięłoby wynik.
+        error = gml.service_exception(text)
+        if error:
+            raise RuntimeError(f"Serwer zwrócił błąd: {error}")
+        return text
