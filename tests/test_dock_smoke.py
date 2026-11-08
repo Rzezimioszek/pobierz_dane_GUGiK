@@ -597,3 +597,30 @@ def test_sheets_window_is_modeless_and_single(dock):
     assert len(QgsProject.instance().mapLayers()) == 1
     second.close()
     assert dock._sheets is None and not QgsProject.instance().mapLayers()
+
+
+def test_new_teryt_allowed_bad_teryt_blocked(dock):
+    dock.sources.select_labels(["dzialki (EGIB)"])
+    dock.scope.tabs.setCurrentIndex(ScopeTab.UNIT)
+    dock.scope.teryt.set_teryt("146501_1.9998")          # obręb spoza słownika
+    dock.scope.teryt.teryt_changed.emit("146501_1.9998")
+    assert dock.btn_download.isEnabled()
+    assert "nie ma w słowniku" in dock.scope.unit_hint.text()
+    assert dock.scope.unit_hint.property("state") == "warn"
+    dock.scope.teryt.set_teryt("14650")
+    dock.scope.teryt.teryt_changed.emit("14650")
+    assert not dock.btn_download.isEnabled() and "Nieprawidłowy" in dock.hint.text()
+    dock.scope.teryt.set_teryt("1465011")                # gmina bez „_”
+    dock.scope.teryt.teryt_changed.emit("1465011")
+    assert dock.scope.scope().teryt == "146501_1"
+
+
+def test_obreb_code_typed_instead_of_name(dock):
+    dock.sources.select_labels(["dzialki (EGIB)"])
+    dock.scope.tabs.setCurrentIndex(ScopeTab.OBREB)
+    dock.scope.txt_obreb.setText("146501_1.9998")
+    dock.scope.txt_nr.setText("12/3")
+    assert dock.btn_download.isEnabled()
+    assert "bez sprawdzania" in dock.scope.obreb_hint.text()
+    dock.scope.txt_obreb.setText("Nieistniejący obręb xyz")
+    assert "wpisz jego kod" in dock.hint.text()

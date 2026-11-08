@@ -128,6 +128,12 @@ QTabWidget#scopeTabs QTabBar::tab:hover:!selected {
 QLabel#hint {
     color: palette(mid);
 }
+QLabel#hint[state="warn"] {
+    color: #b85c00;
+}
+QLabel#hint[state="error"] {
+    color: #c62828;
+}
 QLabel#status {
     border-radius: 6px;
     padding: 6px 8px;

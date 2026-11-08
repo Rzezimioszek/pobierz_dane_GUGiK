@@ -8,7 +8,7 @@ qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 supportsQt6=True
 description=Wtyczka do pobierania obiektów z usługi zbiorczej WFS EGIB. Plugin for downloading features from the EGiB collective WFS service.
-version=1.9.7
+version=1.9.8
 author=Główny Urząd Geodezji i Kartografii (GUGiK) - Łukasz Świątek
 email=uslugi.iip@gugik.gov.pl
 
@@ -27,6 +27,12 @@ repository=https://github.com/GlownyUrzadGeodezjiIKartografii/pobierz_dane_GUGiK
 hasProcessingProvider=yes
 # Uncomment the following line and add your changelog:
 changelog=
+	1.9.8
+		- słownik jednostek (województwa, powiaty, gminy, obręby) w jednym lekkim pliku data/jednostki.json.gz (ok. 420 KB zamiast 6 MB) z datą stanu
+		- kod TERYT spoza słownika (np. nowy obręb) nie blokuje pobierania – ostrzeżenie pod polem, kod sprawdza granica z PRG; zły format kodu jest blokowany z podpowiedzią
+		- gmina wpisana bez podkreślenia (1465011) jest rozpoznawana jako 146501_1
+		- zakładka „Obręb”: zamiast nazwy można wpisać kod obrębu (także spoza słownika)
+		- tools/odswiez_slowniki.py: odświeżenie słownika z PRG przed wydaniem, z ochroną przed niepełnym pobraniem i listą zmian
 	1.9.7
 		- algorytmy Processing (Przybornik → Pobierz dane GUGiK): „Pobierz dla jednostki (TERYT)”, „Pobierz dla zasięgu warstwy”, „Pobierz według listy identyfikatorów” – do modeli, trybu wsadowego i qgis_process; ten sam rdzeń co panel, styl QML dla wyniku
 		- wspólne budowanie zapytań panelu i algorytmów (core/scope.py)

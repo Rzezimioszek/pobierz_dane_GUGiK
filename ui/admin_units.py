@@ -1,8 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Jednostki administracyjne z data/*.geojson: nazwy i kody TERYT
+Jednostki administracyjne z data/jednostki.json.gz: nazwy i kody TERYT
 (województwa, powiaty, gminy, obręby). Wczytywane raz na sesję QGIS.
+
+Słownik odświeża się przed wydaniem (tools/odswiez_slowniki.py). Obręby
+zmieniają się częściej, więc kod zgodny z formatem, a nieobecny
+w słowniku, nie blokuje pobierania – sprawdza go granica z PRG.
 """
+import gzip
 import json
 import os
 import re
@@ -15,21 +20,43 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 _CACHE = None
 
 
-def _props(feat: dict, *keys) -> Optional[str]:
-    props = {k.lower(): v for k, v in (feat.get("properties") or {}).items()}
-    for k in keys:
-        if props.get(k) not in (None, ""):
-            return str(props[k])
-    return None
+DATA_FILE = os.path.join(DATA_DIR, "jednostki.json.gz")
+
+# Formaty kodów: województwo, powiat, gmina (z typem po „_”), obręb
+TERYT_PATTERNS = {
+    "województwo": re.compile(r"^\d{2}$"),
+    "powiat": re.compile(r"^\d{4}$"),
+    "gmina": re.compile(r"^\d{6}_\d$"),
+    "obręb": re.compile(r"^\d{6}_\d\.\d{4}$"),
+}
 
 
-def _read(name: str) -> list:
-    path = os.path.join(DATA_DIR, f"{name}.geojson")
-    if not os.path.exists(path):
-        log.warning(f"[Jednostki] Brak pliku {path}")
-        return []
-    with open(path, encoding="utf-8") as f:
-        return json.load(f).get("features", [])
+def normalize_teryt(text: str) -> str:
+    """'1465011' → '146501_1' (gmina wpisana bez podkreślenia); reszta bez zmian."""
+    text = (text or "").strip()
+    if len(text) == 7 and text.isdigit():
+        return f"{text[:6]}_{text[6]}"
+    return text
+
+
+def teryt_format(teryt: str) -> str:
+    """Poziom wynikający z samego formatu kodu ('' gdy format nieprawidłowy)."""
+    for level, pattern in TERYT_PATTERNS.items():
+        if pattern.match(teryt or ""):
+            return level
+    return ""
+
+
+def _read() -> dict:
+    if not os.path.exists(DATA_FILE):
+        log.warning(f"[Jednostki] Brak pliku {DATA_FILE}")
+        return {}
+    try:
+        with gzip.open(DATA_FILE, "rt", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError) as exc:
+        log.error(f"[Jednostki] Nie można odczytać {DATA_FILE}: {exc}")
+        return {}
 
 
 class AdminUnits:
@@ -54,22 +81,15 @@ class AdminUnits:
         return _CACHE
 
     def _load(self) -> None:
-        for f in _read("wojewodztwa"):
-            name, t = _props(f, "nazwa", "name"), _props(f, "teryt", "id", "kod")
-            if name and t:
-                self.wojewodztwa[t] = {"nazwa": name, "geom": None}
-        for f in _read("powiaty"):
-            name, t = _props(f, "nazwa", "name"), _props(f, "teryt", "id", "kod")
-            if name and t:
-                self.powiaty[t] = {"nazwa": name, "parent": t[:2], "geom": None}
-        for f in _read("gminy"):
-            name, t = _props(f, "nazwa", "name"), _props(f, "teryt", "id", "kod")
-            if name and t:
-                self.gminy[t] = {"nazwa": name, "parent": t[:4], "geom": None}
-        for f in _read("obreby"):
-            name, t = _props(f, "nazwa", "name"), _props(f, "teryt", "id", "kod")
-            if not (name and t):
-                continue
+        data = _read()
+        self.date = data.get("data") or ""        # stan słownika (RRRR-MM-DD), '' = nieznany
+        for t, name in data.get("wojewodztwa", {}).items():
+            self.wojewodztwa[t] = {"nazwa": name, "geom": None}
+        for t, name in data.get("powiaty", {}).items():
+            self.powiaty[t] = {"nazwa": name, "parent": t[:2], "geom": None}
+        for t, name in data.get("gminy", {}).items():
+            self.gminy[t] = {"nazwa": name, "parent": t[:4], "geom": None}
+        for t, name in data.get("obreby", {}).items():
             gmina = t.split(".")[0] if "." in t else t[:8]
             self.obreby_by_name.setdefault(name, []).append(t)
             self.obreby_teryt_to_info[t] = {"nazwa": name, "gmina_code": gmina,
@@ -84,7 +104,8 @@ class AdminUnits:
         for t, d in self.obreby_teryt_to_info.items():
             self.name_to_teryt[f"{d['nazwa']} (obręb {t})"] = t
         log.info(f"[Jednostki] {len(self.wojewodztwa)} woj., {len(self.powiaty)} pow., "
-                 f"{len(self.gminy)} gmin, {len(self.obreby_teryt_to_info)} obrębów")
+                 f"{len(self.gminy)} gmin, {len(self.obreby_teryt_to_info)} obrębów "
+                 f"(stan: {self.date or 'nieznany'})")
 
     # ------------------------------------------------------------------ zapytania
 
@@ -126,6 +147,26 @@ class AdminUnits:
             return f"obręb {info['nazwa']}, gmina {gm}"
         return ""
 
+    def date_text(self) -> str:
+        return f"z dnia {self.date}" if self.date else "z wydania wtyczki"
+
+    def check(self, teryt: str) -> tuple:
+        """
+        (poziom, uwaga) dla kodu wpisanego przez użytkownika:
+        znany → (poziom, ''); poprawny format, ale nowy → (poziom, ostrzeżenie);
+        zły format → ('', błąd).
+        """
+        teryt = normalize_teryt(teryt)
+        known = self.level(teryt)
+        if known:
+            return known, ""
+        fmt = teryt_format(teryt)
+        if not fmt:
+            return "", ("Nieprawidłowy kod TERYT – oczekiwane: województwo 2 cyfry, powiat 4, "
+                        "gmina np. 146501_1, obręb np. 146501_1.0001.")
+        return fmt, (f"Tego kodu nie ma w słowniku jednostek ({self.date_text()}) – może to nowa "
+                     f"jednostka; zostanie sprawdzony w PRG przy pobieraniu.")
+
     def gmina_name(self, teryt: str) -> Optional[str]:
         for key in (teryt[:8], teryt[:6]):
             if key in self.gminy:
@@ -136,8 +177,14 @@ class AdminUnits:
         return self.powiaty.get(teryt[:4], {}).get("nazwa")
 
     def find_obreby(self, name: str) -> list:
-        """TERYT-y obrębów o tej nazwie (bez względu na wielkość liter)."""
+        """
+        TERYT-y obrębów o tej nazwie (bez względu na wielkość liter).
+        Kod obrębu wpisany zamiast nazwy (np. 146501_1.0001) jest przyjmowany
+        także spoza słownika – obręby zmieniają się częściej niż wydania wtyczki.
+        """
         name = (name or "").strip()
+        if teryt_format(name) == "obręb":
+            return [name]
         if name in self.obreby_by_name:
             return self.obreby_by_name[name]
         low = name.lower()

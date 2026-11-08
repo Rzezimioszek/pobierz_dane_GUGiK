@@ -257,6 +257,8 @@ class PD_GUGiKDock(QDockWidget):
     def _scope_problem(self, sel, scope) -> str:
         if scope.kind == "teryt" and not scope.teryt:
             return tr("Wybierz jednostkę albo wpisz kod TERYT.")
+        if scope.kind == "teryt" and not self.units.check(scope.teryt)[0]:
+            return self.units.check(scope.teryt)[1]
         if scope.kind == "rect" and scope.rect is None:
             return tr("Narysuj prostokąt na mapie (przycisk „Rysuj na mapie…”).")
         if scope.kind == "polygon" and scope.geom is None:
@@ -274,7 +276,7 @@ class PD_GUGiKDock(QDockWidget):
             if not scope.obreb or not scope.nr:
                 return tr("Wpisz nazwę obrębu i numer działki.")
             if not self.units.find_obreby(scope.obreb):
-                return tr("Nie znaleziono obrębu o tej nazwie.")
+                return tr("Nie znaleziono obrębu o tej nazwie – wpisz jego kod, np. 146501_1.0001.")
             if not self._parcel_sources(sel):
                 return tr("Wyszukiwanie po obrębie i numerze dotyczy działek – zaznacz działki EGiB lub RCN.")
         return ""

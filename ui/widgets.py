@@ -25,6 +25,7 @@ from ..core.catalog import EGIB_DZIALKI_ATTRIBUTES
 from ..qt_compat import LAYER_FILTER_POLYGON
 from ..skorowidz_services import SKOROWIDZ_BY_LABEL, SKOROWIDZ_SERVICES
 from ..teryt_scope_widget import TerytScopeWidget
+from .admin_units import normalize_teryt
 
 SETTINGS = layers.SETTINGS_PREFIX
 ROLE = Qt.ItemDataRole.UserRole
@@ -519,9 +520,12 @@ class ScopePicker(QWidget):
         return w
 
     def _unit_changed(self, *_):
-        t = self.teryt.get_resolved_teryt()
-        self.unit_hint.setText(self.units.describe(t) if t else "")
-        self.unit_hint.setVisible(bool(self.unit_hint.text()))
+        t = normalize_teryt(self.teryt.get_resolved_teryt())
+        level, note = self.units.check(t) if t else ("", "")
+        text = note or (self.units.describe(t) if t else "")
+        self.unit_hint.setText(text)
+        set_state(self.unit_hint, "error" if t and not level else "warn" if note else "")
+        self.unit_hint.setVisible(bool(text))
         self.changed.emit()
 
     def _tab_map(self) -> QWidget:
@@ -665,8 +669,9 @@ class ScopePicker(QWidget):
     def _tab_obreb(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
-        lay.addWidget(QLabel(tr("Nazwa obrębu:")))
+        lay.addWidget(QLabel(tr("Nazwa albo kod obrębu:")))
         self.txt_obreb = QLineEdit()
+        self.txt_obreb.setPlaceholderText(tr("np. Krzyki albo 026401_1.0012"))
         comp = QCompleter(sorted(self.units.obreby_by_name.keys()), self)
         comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         comp.setFilterMode(Qt.MatchFlag.MatchStartsWith)
@@ -684,12 +689,24 @@ class ScopePicker(QWidget):
         return w
 
     def _obreb_changed(self, *_):
-        n = len(self.units.find_obreby(self.txt_obreb.text()))
         name = self.txt_obreb.text().strip()
-        self.obreb_hint.setText("" if not name else (
-            tr("Nie znaleziono obrębu o tej nazwie.") if n == 0 else
-            tr("Obrębów o tej nazwie: ") + f"{n} – " + tr("wybierzesz właściwy przy pobieraniu.")
-            if n > 1 else ""))
+        found = self.units.find_obreby(name)
+        if not name:
+            text = ""
+        elif not found:
+            text = (tr("Nie znaleziono obrębu o tej nazwie w słowniku ") + self.units.date_text()
+                    + tr(". Nowy obręb? Wpisz jego kod, np. 146501_1.0001."))
+        elif found == [name] and name not in self.units.obreby_teryt_to_info:
+            text = tr("Kodu obrębu nie ma w słowniku ") + self.units.date_text() + \
+                tr(" – zostanie użyty bez sprawdzania.")
+        elif found == [name]:
+            text = self.units.describe(name)
+        elif len(found) > 1:
+            text = tr("Obrębów o tej nazwie: ") + f"{len(found)} – " + \
+                tr("wybierzesz właściwy przy pobieraniu.")
+        else:
+            text = ""
+        self.obreb_hint.setText(text)
         self.changed.emit()
 
     # ------------------------------------------------------------------ wynik
@@ -697,7 +714,7 @@ class ScopePicker(QWidget):
     def scope(self) -> Scope:
         tab = self.TABS[self.tabs.currentIndex()]
         if tab == "teryt":
-            return Scope("teryt", teryt=self.teryt.get_resolved_teryt(),
+            return Scope("teryt", teryt=normalize_teryt(self.teryt.get_resolved_teryt()),
                          precise=self.chk_precise.isChecked())
         if tab == "map":
             s = Scope(self.map_mode())
