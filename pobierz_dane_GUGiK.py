@@ -73,6 +73,7 @@ class PD_GUGiK:
 
         self.pluginIsActive = False
         self.dockwidget = None
+        self.provider = None
 
 
     # noinspection PyMethodMayBeStatic
@@ -174,6 +175,14 @@ class PD_GUGiK:
             text=self.tr(u'Pobierz dane GUGiK'),
             callback=self.run,
             parent=self.iface.mainWindow())
+        self.initProcessing()
+
+    def initProcessing(self):
+        """Algorytmy w Przyborniku Processing (Pobierz dane GUGiK)."""
+        from qgis.core import QgsApplication
+        from .processing.provider import GugikProvider
+        self.provider = GugikProvider()
+        QgsApplication.processingRegistry().addProvider(self.provider)
 
     #--------------------------------------------------------------------------
 
@@ -202,6 +211,10 @@ class PD_GUGiK:
         Wyłączenie/przeładowanie wtyczki: usuwa menu, pasek narzędzi i panel,
         przerywa trwające pobierania. Bez tego panel zostawał w QGIS.
         """
+        if getattr(self, "provider", None) is not None:
+            from qgis.core import QgsApplication
+            QgsApplication.processingRegistry().removeProvider(self.provider)
+            self.provider = None
         for action in self.actions:
             self.iface.removePluginVectorMenu(self.menu, action)
             self.iface.removeToolBarIcon(action)

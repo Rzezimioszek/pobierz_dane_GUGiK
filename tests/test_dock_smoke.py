@@ -270,6 +270,9 @@ def test_unload_removes_everything_and_cancels_tasks():
     plugin.run()
     dock = plugin.dockwidget
     assert iface.docks == [dock] and iface.menu_actions
+    from qgis.core import QgsApplication
+    registry = QgsApplication.processingRegistry()
+    assert registry.providerById("pobierz_dane_gugik") is not None
 
     class FakeTask:
         canceled = False
@@ -285,6 +288,7 @@ def test_unload_removes_everything_and_cancels_tasks():
     plugin.unload()
     assert t.canceled and iface.docks == [] and iface.menu_actions == []
     assert plugin.dockwidget is None and plugin.toolbar is None
+    assert registry.providerById("pobierz_dane_gugik") is None
     assert dock.canvas.mapTool() is not tool
     assert not [tb for tb in iface._win.findChildren(QToolBar) if tb.objectName() == "PobieranieGUGiK"
                 and tb.parent() is iface._win and tb.isVisible()]
@@ -294,6 +298,7 @@ def test_unload_removes_everything_and_cancels_tasks():
     plugin2.initGui()
     plugin2.run()
     assert len(iface.docks) == 1
+    assert registry.providerById("pobierz_dane_gugik") is not None
     plugin2.unload()
 
 

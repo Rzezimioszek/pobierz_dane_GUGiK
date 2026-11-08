@@ -25,6 +25,7 @@ from .widgets import (
     OutputPicker, ScopePicker, SourcePicker, TasksPanel, hint_label, set_state, step_box,
 )
 from ..core import catalog, filters, layers, log, net, tasks
+from ..core import scope as scope_mod
 from ..prg_client import PRGClient
 from ..qt_compat import GEOM_POLYGON
 from .sheets import SheetsDialog, already_downloaded, format_size
@@ -40,7 +41,6 @@ def load_style_sheet() -> str:
             return f.read()
     except OSError:
         return ""
-ID_BATCH = 10
 POINT_CLOUD_EXT = (".copc.laz", ".laz", ".las", ".copc")
 
 
@@ -452,14 +452,7 @@ class PD_GUGiKDock(QDockWidget):
             for s in wfs:
                 if not rows[s.label].running:   # anulowane przed pobraniem granicy
                     continue
-                if s.clip_locally:
-                    q = tasks.Query(filters.spatial(s.geom_field, geom.asWkt(), use_bbox=True),
-                                    clip_geom=geom, label=teryt)
-                else:
-                    q = tasks.Query(filters.combine([
-                        filters.spatial(s.geom_field, geom.asWkt(), use_bbox=not scope.precise),
-                        filters.attribute(s.teryt_field, teryt, like=True),
-                    ]), label=teryt)
+                q = scope_mod.teryt_query(s, teryt, geom, precise=scope.precise)
                 self._download(s, [q], out, f"TERYT {teryt}", row=rows[s.label])
         self._run(task, got_boundary)
 
@@ -501,33 +494,11 @@ class PD_GUGiKDock(QDockWidget):
         for s in sel.sources:
             self._download(s, self._geometry_queries(s, geoms, layer.name()), out, scope.describe())
 
-    @staticmethod
-    def _geometry_queries(source, geoms, label) -> list:
-        """
-        Zapytanie na każdą geometrię (EPSG:2180). Do 100 wierzchołków: dokładny
-        kształt (każda część osobno), więcej: otoczka wypukła albo prostokąt.
-        Zawsze z przycięciem po pobraniu, więc wynik odpowiada dokładnie geometrii.
-        """
-        queries = []
-        for i, g in enumerate(geoms):
-            name = f"{label} #{i + 1}" if len(geoms) > 1 else label
-            if g.constGet().nCoordinates() <= 100:
-                flt = filters.spatial(source.geom_field, g.asWkt(), use_bbox=False)
-            else:
-                hull = g.convexHull()
-                flt = (filters.spatial(source.geom_field, hull.asWkt(), use_bbox=False)
-                       if hull.constGet().nCoordinates() <= 100
-                       else filters.spatial(source.geom_field, g.asWkt(), use_bbox=True))
-            queries.append(tasks.Query(flt, clip_geom=g, label=name))
-        return queries
+    _geometry_queries = staticmethod(scope_mod.geometry_queries)
 
     # ------------------------------------------------------------------ po ID / obrębie
 
-    @staticmethod
-    def _id_queries(source, ids) -> list:
-        return [tasks.Query(filters.ids(source.id_field, ids[i:i + ID_BATCH]),
-                            label=f"ID {i + 1}–{min(i + ID_BATCH, len(ids))}")
-                for i in range(0, len(ids), ID_BATCH)]
+    _id_queries = staticmethod(scope_mod.id_queries)
 
     def _start_obreb(self, sel, scope, out) -> None:
         candidates = self.units.find_obreby(scope.obreb)

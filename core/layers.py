@@ -294,6 +294,48 @@ def stamp(layer, info: Optional[dict], added: int) -> None:
     layer.setMetadata(md)
 
 
+def make_features(features: list, layer_fields: QgsFields, is_multi: bool,
+                  unique_field: Optional[str] = None, seen: Optional[set] = None,
+                  pk: Optional[set] = None, label: str = "") -> list:
+    """
+    Obiekty QgsFeature w schemacie `layer_fields` (bez warstwy i projektu –
+    używane też przez algorytmy Processing). Duplikaty `unique_field` (także
+    już obecne w `seen`) i puste geometrie są pomijane.
+    """
+    seen = set() if seen is None else seen
+    pk = pk or set()      # np. fid w GPKG – nadaje dostawca
+    bad: dict = {}
+    out = []
+    for fd in features:
+        key = fd["attrs"].get(unique_field) if unique_field else None
+        if key not in (None, "") and key in seen:
+            continue
+        g = fd["geom"]
+        g = QgsGeometry(g) if isinstance(g, QgsGeometry) else QgsGeometry.fromWkt(g)
+        if g.isNull() or g.isEmpty():
+            continue
+        if is_multi and not g.isMultipart():
+            g.convertToMultiType()
+        elif not is_multi and g.isMultipart() and g.constGet().partCount() == 1:
+            g.convertToSingleType()  # warstwa jednoczęściowa, np. z wersji 1.x
+        feat = QgsFeature(layer_fields)
+        feat.setGeometry(g)
+        feat.setAttributes([
+            None if i in pk else _value_for(layer_fields.at(i), fd["attrs"].get(layer_fields.at(i).name()), bad)
+            for i in range(layer_fields.count())])
+        out.append(feat)
+        if key not in (None, ""):
+            seen.add(key)
+    for name, n in bad.items():
+        log.warning(f"[Warstwa] {label}: {n} wartości pola {name} nie jest liczbą – zapisano puste")
+    return out
+
+
+def schema_for(features: list, numeric: Optional[dict] = None) -> QgsFields:
+    """Schemat pól z atrybutów pobranych obiektów (publiczny odpowiednik _schema)."""
+    return _schema(features, numeric)
+
+
 def write(features: list, layer_name: str, geom_type: str,
           unique_field: Optional[str] = None, style: Optional[str] = None,
           load_style: bool = True, project: QgsProject = None,
@@ -336,34 +378,9 @@ def write(features: list, layer_name: str, geom_type: str,
             apply_style(vl, style)
         add_to_project(vl, project, group)
 
-    is_multi = QgsWkbTypes.isMultiType(vl.wkbType())
-    layer_fields = vl.fields()
-    pk = set(vl.dataProvider().pkAttributeIndexes())  # np. fid w GPKG – nadaje dostawca
-    bad: dict = {}
-    out = []
-    for fd in features:
-        key = fd["attrs"].get(unique_field) if unique_field else None
-        if key not in (None, "") and key in seen:
-            continue
-        g = fd["geom"]
-        g = QgsGeometry(g) if isinstance(g, QgsGeometry) else QgsGeometry.fromWkt(g)
-        if g.isNull() or g.isEmpty():
-            continue
-        if is_multi and not g.isMultipart():
-            g.convertToMultiType()
-        elif not is_multi and g.isMultipart() and g.constGet().partCount() == 1:
-            g.convertToSingleType()  # warstwa jednoczęściowa, np. z wersji 1.x
-        feat = QgsFeature(layer_fields)
-        feat.setGeometry(g)
-        feat.setAttributes([
-            None if i in pk else _value_for(layer_fields.at(i), fd["attrs"].get(layer_fields.at(i).name()), bad)
-            for i in range(layer_fields.count())])
-        out.append(feat)
-        if key not in (None, ""):
-            seen.add(key)
-
-    for name, n in bad.items():
-        log.warning(f"[Warstwa] {layer_name}: {n} wartości pola {name} nie jest liczbą – zapisano puste")
+    out = make_features(features, vl.fields(), QgsWkbTypes.isMultiType(vl.wkbType()),
+                        unique_field, seen, set(vl.dataProvider().pkAttributeIndexes()),
+                        layer_name)
     if out:
         ok, _ = vl.dataProvider().addFeatures(out)
         if not ok:
