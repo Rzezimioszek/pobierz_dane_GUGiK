@@ -255,7 +255,7 @@ def unique_name(base: str, tag: str = "", project: QgsProject = None,
     """Pierwsza wolna nazwa `base_tag_N` (N od 1) w projekcie i w pliku GPKG."""
     project = project or QgsProject.instance()
     stem = f"{base}_{_safe(tag)}" if _safe(tag) else base
-    taken = {l.name() for l in project.mapLayers().values()}
+    taken = {lyr.name() for lyr in project.mapLayers().values()}
     if gpkg_path and os.path.exists(gpkg_path):
         probe = QgsVectorLayer(gpkg_path, "probe", "ogr")
         if probe.isValid():
@@ -288,7 +288,7 @@ def stamp(layer, info: Optional[dict], added: int) -> None:
     ) if x))
     md.addHistoryItem(f"{now} · {added} obiektów" + (f" · {scope}" if scope else "")
                       + (f" · {url}" if url else ""))
-    if url and not any(l.url == url for l in md.links()):
+    if url and not any(link.url == url for link in md.links()):
         link = QgsAbstractMetadataBase.Link("Usługa WFS", "OGC:WFS", url)
         md.addLink(link)
     layer.setMetadata(md)
@@ -414,7 +414,7 @@ def write_source(features: list, source: Source, output: Optional[Output] = None
             write(parts["polygon"], name(f"{source.layer_name}_poligony"), "MultiPolygon",
                   source.unique_field, "a08_ulice_poligony", **common),
         ]
-        return [l for l in layers if l is not None]
+        return [lyr for lyr in layers if lyr is not None]
     layer = write(features, name(source.layer_name), source.geom_type,
                   source.unique_field, source.style, **common)
     return [layer] if layer is not None else []

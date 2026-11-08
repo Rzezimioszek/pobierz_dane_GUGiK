@@ -249,7 +249,7 @@ def _geojson_geom_to_wkt(geom_dict: Optional[dict]) -> str:
             )
             return f"MULTIPOLYGON ({polys})"
 
-    except Exception:
-        pass
+    except Exception as exc:   # nieobsługiwana geometria – brak WKT, bez przerywania
+        QgsMessageLog.logMessage(f"[powiaty] geometria pominięta: {exc}", LOG_TAG, Qgis.MessageLevel.Info)
 
     return ""

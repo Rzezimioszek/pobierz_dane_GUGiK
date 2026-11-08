@@ -21,6 +21,7 @@ import xml.etree.ElementTree as ET  # nosec – odpowiedź usługi GUGiK, bez DT
 
 import requests
 
+
 def _plugin_dir() -> str:
     """
     Folder wtyczki: obok tego pliku, a gdy skrypt uruchomiono z edytora/konsoli

@@ -41,6 +41,8 @@ def load_style_sheet() -> str:
             return f.read()
     except OSError:
         return ""
+
+
 POINT_CLOUD_EXT = (".copc.laz", ".laz", ".las", ".copc")
 
 
@@ -560,7 +562,7 @@ class PD_GUGiKDock(QDockWidget):
                 except Exception as exc:
                     row.finish(tr("Nie udało się zapisać wyników: ") + str(exc), ok=False)
                     return
-            names = ", ".join(l.name() for l in written)
+            names = ", ".join(lyr.name() for lyr in written)
             if result.canceled:
                 row.finish(tr("Przerwano. Zapisano obiektów: ") + str(n), ok=False)
             elif not n and result.errors:

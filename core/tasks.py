@@ -7,6 +7,7 @@ Zadania w tle. Cała praca sieciowa wtyczki odbywa się tutaj, nigdy w wątku in
     HitsTask         – liczba obiektów pasujących do filtra
     FileDownloadTask – plik (paczki opendata, rastry ze skorowidzów) na dysk
 """
+import contextlib
 import os
 from dataclasses import dataclass, field
 from typing import Optional
@@ -21,10 +22,8 @@ from .wfs import PAGE_SIZE, WfsClient
 
 def _close(session) -> None:
     """Zamyka sesję HTTP zadania (połączenia nie czekają na sprzątanie przez Pythona)."""
-    try:
+    with contextlib.suppress(Exception):
         session.close()
-    except Exception:
-        pass
 
 
 @dataclass

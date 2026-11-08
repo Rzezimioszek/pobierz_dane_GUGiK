@@ -69,9 +69,10 @@ def test_api_documentation_example():
 
 
 def test_api_prefixed_entries_prefer_wfs_over_atom():
-    payload = [{"metadata": {}, "data": [{"teryt": "1261", "zbior": "Baza danych szczegółowych osnów geodezyjnych",
-        "uslugi": {"pobierania": ["ATOM=https://x.pl/atom/feed.xml",
-                                  "WFS=https://x.pl/gs/ows?service=WFS&request=GetCapabilities"]}}]}]
+    wfs = "WFS=https://x.pl/gs/ows?service=WFS&request=GetCapabilities"
+    record = {"teryt": "1261", "zbior": "Baza danych szczegółowych osnów geodezyjnych",
+              "uslugi": {"pobierania": ["ATOM=https://x.pl/atom/feed.xml", wfs]}}
+    payload = [{"metadata": {}, "data": [record]}]
     assert client().parse_api(payload)[0].url_wfs == "https://x.pl/gs/ows"
 
 

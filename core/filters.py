@@ -5,7 +5,7 @@ Filtry FES 2.0 dla zapytań WFS (EPSG:2180).
 Kolejność osi: EPSG:2180 w postaci URN ma oś N (Y) przed E (X), dlatego
 w Envelope piszemy '{ymin} {xmin}', a w posList '{y} {x}'.
 """
-from xml.sax.saxutils import escape
+from xml.sax.saxutils import escape  # nosec B406 – tylko escape tekstu do XML, bez parsowania
 
 try:
     import defusedxml.ElementTree as ET

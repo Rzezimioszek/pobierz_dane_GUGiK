@@ -11,7 +11,7 @@ import zipfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NAME = os.path.basename(ROOT)
 SKIP_DIRS = {"tests", "tools", "dist", "__pycache__", ".git", ".github", ".pytest_cache", "_sync"}
-SKIP_FILES = {".gitignore", "pylintrc"}
+SKIP_FILES = {".gitignore", "pylintrc", ".flake8"}
 
 
 def main():
@@ -27,7 +27,11 @@ def main():
                 if f in SKIP_FILES or f.startswith("_backup") or f.endswith(".pyc"):
                     continue
                 path = os.path.join(folder, f)
-                z.write(path, os.path.join(NAME, os.path.relpath(path, ROOT)))
+                info = zipfile.ZipInfo.from_file(path, os.path.join(NAME, os.path.relpath(path, ROOT)))
+                info.external_attr = 0o644 << 16          # bez bitu wykonywania (skan repo QGIS)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                with open(path, "rb") as src:
+                    z.writestr(info, src.read())
     print(target)
 
 

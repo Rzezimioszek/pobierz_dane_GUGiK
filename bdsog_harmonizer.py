@@ -42,9 +42,9 @@ def _layer_name_to_harmonizer_key(layer_name: str, zbior: str = "bdsog") -> str:
         if "budynki" in norm:
             return "egib_bud"
         if "dzialki" in norm:
-                return "egib_dzi"
+            return "egib_dzi"
         if "punkty" in norm:
-                return "egib_pkt"
+            return "egib_pkt"
 
 
 def _coerce(value, qvariant_type: int):
@@ -290,6 +290,7 @@ class EgibPktHarmonizer(BaseHarmonizer):
         "SPD":     ["SPD", "spd"],
     }
 
+
 class EgibBudHarmonizer(BaseHarmonizer):
     LAYER_NAME = "Budynki"
     GEOM_TYPE = "Polygon"
@@ -308,6 +309,7 @@ class EgibBudHarmonizer(BaseHarmonizer):
         "KONDYGNACJE_NADZIEMNE":     ["KONDYGNACJE_NADZIEMNE", "kondygnacje_nadziemne"],
         "KONDYGNACJE_PODZIEMNE":     ["KONDYGNACJE_PODZIEMNE", "kondygnaje_podziemne"],
     }
+
 
 class EgibDziHarmonizer(BaseHarmonizer):
     LAYER_NAME = "Dzialki"
@@ -339,6 +341,7 @@ class EgibDziHarmonizer(BaseHarmonizer):
         "DATA":     ["DATA", "data"],
     }
 
+
 class RCNHarmonizer(BaseHarmonizer):
     LAYER_NAME = "Transakcje"
     STYLE = "transakcje"
@@ -365,6 +368,7 @@ class RCNHarmonizer(BaseHarmonizer):
         "link":     ["link", "LINK"],
     }
 
+
 class RCN2026Harmonizer(BaseHarmonizer):
     LAYER_NAME = "Dzialki (RCN)"
     GEOM_TYPE = "Polygon"
@@ -381,6 +385,7 @@ class RCN2026Harmonizer(BaseHarmonizer):
         "teryt": ["teryt", "TERYT"],
         "tran_lokalny_id_iip":     ["tran_lokalny_id_iip", "TRAN_LOKALNY_ID_IIP"],
     }
+
 
 class BDOT500BudHarmonizer(BaseHarmonizer):
     LAYER_NAME = "Budynki i obiekty towarzyszące"
@@ -405,13 +410,9 @@ class BDOT500BudHarmonizer(BaseHarmonizer):
     }
 
 
-
-
-
 # ---------------------------------------------------------------------------
 # Fabryka
 # ---------------------------------------------------------------------------
-
 _HARMONIZER_MAP: dict = {
     "bdsog_poziom": BdsogPoziomHarmonizer,
     "bdsog_wysok":  BdsogWysokHarmonizer,

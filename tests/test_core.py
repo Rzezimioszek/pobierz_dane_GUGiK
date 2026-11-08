@@ -207,7 +207,7 @@ def test_friendly_network_errors():
                                            "'too many 500 error responses'))")
     assert "500" in net.friendly(retry) and "niedostępna" in net.friendly(retry)
     assert "połączenia" in net.friendly(requests.ConnectionError("Max retries exceeded … "
-                                                                  "NameResolutionError"))
+                                                                 "NameResolutionError"))
 
 
 def test_write_groups_layers_and_stamps_metadata():
@@ -223,7 +223,7 @@ def test_write_groups_layers_and_stamps_metadata():
     assert "https://example.pl/wfs" in md.abstract() and "TERYT 1465" in md.abstract()
     assert len(md.history()) == 2 and md.history()[0].split(" · ")[1] == "3 obiektów"
     assert md.history()[1].split(" · ")[1] == "1 obiektów"
-    assert [l.url for l in md.links()] == ["https://example.pl/wfs"]
+    assert [lyr.url for lyr in md.links()] == ["https://example.pl/wfs"]
 
 
 def test_separate_layers_get_numbered_names():
@@ -234,10 +234,10 @@ def test_separate_layers_get_numbered_names():
     first = layers.write_source(_features(2), src, out, scope="TERYT 1465", tag="1465")
     second = layers.write_source(_features(2), src, out, scope="TERYT 1465", tag="1465")
     try:
-        assert [l.name() for l in first + second] == ["Dzialki_1465_1", "Dzialki_1465_2"]
+        assert [lyr.name() for lyr in first + second] == ["Dzialki_1465_1", "Dzialki_1465_2"]
         assert layers.unique_name("Dzialki", "obręb 12/3") == "Dzialki_obreb_12_3_1"
     finally:
-        QgsProject.instance().removeMapLayers([l.id() for l in first + second])
+        QgsProject.instance().removeMapLayers([lyr.id() for lyr in first + second])
 
 
 def test_task_reports_running_count(server):
@@ -266,7 +266,7 @@ def test_prefix_names_layers_and_groups_them():
         sub = QgsProject.instance().layerTreeRoot().findGroup("GUGiK").findGroup("ProjektA")
         assert sub is not None and sub.findLayer(a[0].id()) and sub.findLayer(sep[0].id())
     finally:
-        QgsProject.instance().removeMapLayers([l.id() for l in a + sep])
+        QgsProject.instance().removeMapLayers([lyr.id() for lyr in a + sep])
 
 
 def test_prefix_in_gpkg_table_names(tmp_path):

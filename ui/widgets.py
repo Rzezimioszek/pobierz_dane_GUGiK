@@ -715,7 +715,7 @@ class ScopePicker(QWidget):
         self.txt_ids.setPlainText("\n".join(ids))
 
     def ids(self) -> list:
-        return [l.strip() for l in self.txt_ids.toPlainText().splitlines() if l.strip()]
+        return [line.strip() for line in self.txt_ids.toPlainText().splitlines() if line.strip()]
 
     def _tab_obreb(self) -> QWidget:
         w = QWidget()
@@ -873,7 +873,8 @@ class OutputPicker(QWidget):
         self.btn_fields.toggled.connect(self._toggle_fields)
 
         for sig in (self.rb_gpkg.toggled, self.fw_gpkg.fileChanged, self.chk_style.toggled,
-                    self.chk_separate.toggled, self.ed_prefix.textChanged, self.cmb_package.currentIndexChanged, self.list_attrs.itemChanged):
+                    self.chk_separate.toggled, self.ed_prefix.textChanged,
+                    self.cmb_package.currentIndexChanged, self.list_attrs.itemChanged):
             sig.connect(self._save)
         self._save()
 

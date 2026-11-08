@@ -3,8 +3,6 @@
 import importlib
 import os
 
-import pytest
-
 from conftest import PLUGIN_DIR, PLUGIN_NAME
 
 

@@ -3,7 +3,7 @@
 Granice jednostek administracyjnych z PRG (do filtrowania zapytań po TERYT).
 """
 from typing import Optional
-from xml.sax.saxutils import escape
+from xml.sax.saxutils import escape  # nosec B406 – tylko escape tekstu do XML, bez parsowania
 
 from qgis.core import QgsGeometry
 

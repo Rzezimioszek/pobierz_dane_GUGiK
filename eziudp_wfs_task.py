@@ -21,6 +21,7 @@ Filtrowanie zakresu:
     z OGC BBOX do lokalnego przycinania po pobraniu jeśli serwer
     nie zastosował filtra
 """
+import contextlib
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -370,10 +371,8 @@ def _read_direct(
             if len(batch) < _DIRECT_PAGE:
                 break
     finally:
-        try:
+        with contextlib.suppress(Exception):
             session.close()
-        except Exception:
-            pass
     return None, geom_type, features
 
 
@@ -422,7 +421,7 @@ class EziudpWfsTask(QgsTask):
 
         # Miejsce zapisu i nazwy warstw w projekcie – odczytane tu, w głównym wątku
         self.output = layers.Output.from_settings(load_style)
-        self._existing_names = {l.name() for l in QgsProject.instance().mapLayers().values()}
+        self._existing_names = {lyr.name() for lyr in QgsProject.instance().mapLayers().values()}
         self._pending: list = []   # warstwy do utworzenia w finished()
 
         self._eziudp = EziudpClient()

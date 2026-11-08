@@ -6,6 +6,7 @@ Zmiany:
   - Zamiast cmb_zbior (jeden wybór) – lista checkboxów do wyboru warstw
   - Warstwy zgrupowane: BDSOG (2), EGIB (2), GESUT, BDOT500
 """
+import contextlib
 import os
 
 from .teryt_scope_widget import TerytScopeWidget
@@ -227,11 +228,9 @@ class EziudpWidget(QWidget):
         plugin_dir = ""
         load_style = False
         if dock:
-            try:
-                import inspect
+            import inspect
+            with contextlib.suppress(Exception):
                 plugin_dir = os.path.dirname(inspect.getfile(type(dock)))
-            except Exception:
-                pass
             chk = getattr(dock, "chk_load_style", None)
             load_style = chk.isChecked() if chk is not None else False
 
@@ -366,7 +365,7 @@ class EziudpWidget(QWidget):
     def _teryts_from_bbox_wkt(self, bbox_wkt: str) -> list:
         """
         Zwraca listę 4-cyfrowych TERYT-ów powiatów przecinających bbox_wkt.
- 
+
         Korzysta z lokalnego pliku index/powiaty.geojson (przez PowiatyIndex)
         zamiast usługi WFS/PRG. Szybkie – indeks przestrzenny QgsSpatialIndex.
         bbox_wkt musi być w EPSG:2180.
@@ -374,7 +373,7 @@ class EziudpWidget(QWidget):
         bbox_geom = QgsGeometry.fromWkt(bbox_wkt)
         if bbox_geom is None or bbox_geom.isEmpty():
             return []
- 
+
         idx = self._get_powiaty_index()
         if idx is None or not idx.is_loaded():
             QgsMessageLog.logMessage(
@@ -382,7 +381,7 @@ class EziudpWidget(QWidget):
                 LOG_TAG, Qgis.MessageLevel.Warning,
             )
             return []
- 
+
         return idx.teryts_intersecting(bbox_geom)
 
     # ------------------------------------------------------------------

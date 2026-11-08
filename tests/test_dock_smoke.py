@@ -510,7 +510,7 @@ def test_separate_layer_option_names_each_download(dock):
         dock.start()
         _wait(dock)
     from qgis.core import QgsProject
-    names = sorted(l.name() for l in QgsProject.instance().mapLayers().values())
+    names = sorted(lyr.name() for lyr in QgsProject.instance().mapLayers().values())
     assert names == ["Dzialki_ID_1", "Dzialki_ID_2"]
     dock.output.chk_separate.setChecked(False)
 
@@ -526,7 +526,7 @@ def test_prefix_field_names_download_and_summary(dock):
     assert "Projekt_A" in dock.output_box.summary.text()
     dock.start()
     _wait(dock)
-    assert [l.name() for l in QgsProject.instance().mapLayers().values()] == ["Projekt_A_Dzialki"]
+    assert [lyr.name() for lyr in QgsProject.instance().mapLayers().values()] == ["Projekt_A_Dzialki"]
     dock.output.ed_prefix.clear()
     assert not dock.output.prefix_hint.isVisible()
 

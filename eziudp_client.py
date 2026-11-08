@@ -16,7 +16,7 @@ from typing import Optional
 try:
     import defusedxml.ElementTree as ET
 except ImportError:
-    from xml.etree import ElementTree as ET
+    from xml.etree import ElementTree as ET  # nosec B405 – XML z usług GUGiK; defusedxml, gdy jest
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -468,11 +468,11 @@ class EziudpClient:
         records = []
         rows = self._ROW_RE.findall(html) or [html]
         for row in rows:
-            links = [l.strip() for l in self._HREF_RE.findall(row)]
-            wfs = [l for l in links if "wfs" in l.lower()]
+            links = [href.strip() for href in self._HREF_RE.findall(row)]
+            wfs = [href for href in links if "wfs" in href.lower()]
             if not wfs:
                 continue
-            wms = [l for l in links if "wms" in l.lower() and "wfs" not in l.lower()]
+            wms = [href for href in links if "wms" in href.lower() and "wfs" not in href.lower()]
             text = re.sub(r"<[^>]+>", " ", row)
             teryt = self._TERYT_RE.search(text)
             records.append(EziudpRecord(
@@ -519,7 +519,7 @@ class EziudpClient:
         """
         names = []
         try:
-            root = ET.fromstring(xml_bytes) # nosec
+            root = ET.fromstring(xml_bytes)  # nosec
             for ns in (
                 "http://www.opengis.net/wfs/2.0",
                 "http://www.opengis.net/wfs",

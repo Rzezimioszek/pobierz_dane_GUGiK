@@ -16,7 +16,7 @@ ENABLED = True      # testy wyłączają zapytania do prawdziwej usługi
 
 def parse_regions(text: str) -> list:
     """[(kod obrębu, nazwa obrębu, nazwa jednostki)]; pusta lista dla „-1 …”."""
-    lines = [l.strip() for l in (text or "").replace("\r", "").split("\n") if l.strip()]
+    lines = [line.strip() for line in (text or "").replace("\r", "").split("\n") if line.strip()]
     if not lines:
         raise RuntimeError("Pusta odpowiedź ULDK")
     status = lines[0].split()[0]

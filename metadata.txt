@@ -4,11 +4,11 @@
 
 [general]
 name=Pobierz dane GUGiK
-qgisMinimumVersion=3.22
+qgisMinimumVersion=3.40
 qgisMaximumVersion=4.99
 supportsQt6=True
-description=Wtyczka do pobierania obiektów z usługi zbiorczej WFS EGIB. Plugin for downloading features from the EGiB collective WFS service.
-version=1.9.9
+description=Pobieranie danych z usług GUGiK: EGiB, RCN, PRG, PRNG, pliki ze skorowidzów (ortofotomapa, LIDAR, NMT/NMPT) i powiatowe WFS z EZiUDP. Download data from Polish GUGiK services (cadastre, real estate prices, boundaries, place names, sheet indexes).
+version=1.9.10
 author=Główny Urząd Geodezji i Kartografii (GUGiK) - Łukasz Świątek
 email=uslugi.iip@gugik.gov.pl
 
@@ -27,6 +27,10 @@ repository=https://github.com/GlownyUrzadGeodezjiIKartografii/pobierz_dane_GUGiK
 hasProcessingProvider=yes
 # Uncomment the following line and add your changelog:
 changelog=
+	1.9.10
+		- minimalna wersja QGIS: 3.40 LTR (testy automatyczne na QGIS 3.40 i 4.2)
+		- zgodność z kontrolami repozytorium QGIS: bez ostrzeżeń Bandit i detect-secrets, porządki flake8, pliki w paczce bez bitu wykonywania
+		- metadane: opis obejmuje wszystkie źródła danych, strona domowa wskazuje README repozytorium
 	1.9.9
 		- poprawka: obręby gmin miejsko-wiejskich (jednostki _4/_5) oraz Warszawy, Krakowa i Łodzi (dzielnice/delegatury _8/_9) – wcześniej 727 gmin nie miało żadnego obrębu
 		- zakładka „Jednostka”: lista „Obręb” po wyborze gminy – od razu ze słownika, chwilę później aktualna lista z ULDK (GetRegionById) z informacją o różnicach
@@ -160,7 +164,7 @@ changelog=
 # Tags are comma separated with spaces allowed
 tags=python,egib,gugik,wfs,pobieranie,pobieracz,uldk,powiat,download,kataster
 
-homepage=https://www.gov.pl/web/gugik
+homepage=https://github.com/GlownyUrzadGeodezjiIKartografii/pobierz_dane_GUGiK#readme
 category=Plugins
 icon=icon400.jpg
 # experimental flag
