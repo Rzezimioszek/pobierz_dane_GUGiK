@@ -8,6 +8,7 @@ Wszystko tutaj działa w głównym wątku: tworzy i dodaje warstwy do projektu.
 """
 import os
 import zipfile
+from dataclasses import dataclass
 from typing import Optional
 
 import re
@@ -345,6 +346,33 @@ def make_features(features: list, layer_fields: QgsFields, is_multi: bool,
     return out
 
 
+@dataclass
+class Prepared:
+    """
+    Obiekty gotowe do dodania do warstwy, przygotowane w wątku roboczym
+    (zadanie pobierania), żeby w głównym wątku zostało samo addFeatures.
+    """
+    fields: QgsFields
+    features: list          # QgsFeature w schemacie `fields`
+    keys: list              # wartość pola unikalnego dla każdego obiektu (albo None)
+
+
+def prepare(features: list, geom_type: str, numeric: Optional[dict] = None,
+            unique_field: Optional[str] = None, label: str = "") -> Prepared:
+    """Schemat + QgsFeature z pobranych obiektów; bez warstwy i projektu (bezpieczne w tle)."""
+    fields = _schema(features, numeric)
+    is_multi = QgsWkbTypes.isMultiType(QgsWkbTypes.parseType(geom_type))
+    out = make_features(features, fields, is_multi, unique_field, label=label)
+    idx = fields.indexOf(unique_field) if unique_field else -1
+    keys = [f.attribute(idx) for f in out] if idx >= 0 else [None] * len(out)
+    return Prepared(fields, out, keys)
+
+
+def _same_schema(a: QgsFields, b: QgsFields) -> bool:
+    return a.count() == b.count() and all(
+        a.at(i).name() == b.at(i).name() and a.at(i).type() == b.at(i).type() for i in range(a.count()))
+
+
 def schema_for(features: list, numeric: Optional[dict] = None) -> QgsFields:
     """Schemat pól z atrybutów pobranych obiektów (publiczny odpowiednik _schema)."""
     return _schema(features, numeric)
@@ -355,7 +383,7 @@ def write(features: list, layer_name: str, geom_type: str,
           load_style: bool = True, project: QgsProject = None,
           numeric: Optional[dict] = None, fields: Optional[QgsFields] = None,
           gpkg_path: Optional[str] = None, info: Optional[dict] = None,
-          group: str = "") -> Optional[QgsVectorLayer]:
+          group: str = "", prepared: Optional[Prepared] = None) -> Optional[QgsVectorLayer]:
     """
     Dopisuje obiekty do warstwy `layer_name` (tworzy ją, gdy jej nie ma):
     tymczasowej albo w pliku `gpkg_path`.
@@ -366,6 +394,8 @@ def write(features: list, layer_name: str, geom_type: str,
                 wartość w pierwszej porcji jest liczbą (inaczej zostają tekstem)
     info      – opis pobrania do metadanych warstwy (patrz stamp)
     group     – podgrupa w grupie „GUGiK” dla nowej warstwy (prefiks projektu)
+    prepared  – obiekty przygotowane w tle (prepare); używane, gdy schemat warstwy
+                się zgadza – inaczej obiekty są budowane tutaj z `features`
     Obiekty o wartości `unique_field` już obecnej w warstwie są pomijane.
     Zwraca warstwę albo None, gdy nie było czego zapisać.
     """
@@ -379,7 +409,8 @@ def write(features: list, layer_name: str, geom_type: str,
         if unique_field and vl.fields().indexOf(unique_field) != -1:
             seen = {f.attribute(unique_field) for f in vl.getFeatures()}
     else:
-        schema = fields if fields is not None else _schema(features, numeric)
+        schema = (fields if fields is not None else prepared.fields if prepared is not None
+                  else _schema(features, numeric))
         if gpkg_path:
             vl = _gpkg_layer(gpkg_path, layer_name, geom_type, schema)
             if unique_field and vl.fields().indexOf(unique_field) != -1:
@@ -392,9 +423,15 @@ def write(features: list, layer_name: str, geom_type: str,
             apply_style(vl, style)
         add_to_project(vl, project, group)
 
-    out = make_features(features, vl.fields(), QgsWkbTypes.isMultiType(vl.wkbType()),
-                        unique_field, seen, set(vl.dataProvider().pkAttributeIndexes()),
-                        layer_name)
+    pk = set(vl.dataProvider().pkAttributeIndexes())
+    if prepared is not None and not pk and _same_schema(vl.fields(), prepared.fields) \
+            and QgsWkbTypes.isMultiType(vl.wkbType()):
+        # szybka ścieżka: obiekty gotowe z wątku roboczego, tu tylko duplikaty i dodanie
+        out = [f for f, k in zip(prepared.features, prepared.keys)
+               if k in (None, "") or k not in seen] if seen else list(prepared.features)
+    else:
+        out = make_features(features, vl.fields(), QgsWkbTypes.isMultiType(vl.wkbType()),
+                            unique_field, seen, pk, layer_name)
     if out:
         ok, _ = vl.dataProvider().addFeatures(out)
         if not ok:
@@ -406,7 +443,7 @@ def write(features: list, layer_name: str, geom_type: str,
 
 
 def write_source(features: list, source: Source, output: Optional[Output] = None,
-                 scope: str = "", tag: str = "") -> list:
+                 scope: str = "", tag: str = "", prepared: Optional[Prepared] = None) -> list:
     """
     Zapis według opisu źródła z katalogu. Zwraca listę użytych warstw.
     scope – opis zakresu do metadanych; tag – fragment nazwy przy osobnych warstwach.
@@ -430,7 +467,7 @@ def write_source(features: list, source: Source, output: Optional[Output] = None
         ]
         return [lyr for lyr in layers if lyr is not None]
     layer = write(features, name(source.layer_name), source.geom_type,
-                  source.unique_field, source.style, **common)
+                  source.unique_field, source.style, prepared=prepared, **common)
     return [layer] if layer is not None else []
 
 

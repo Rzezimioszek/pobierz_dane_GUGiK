@@ -727,10 +727,14 @@ class ScopePicker(QWidget):
         lay.addLayout(row)
         return w
 
-    def _ids_changed(self):
+    def _ids_changed(self, emit=True):
         n = len(self.ids())
-        self.ids_hint.setText(tr("Identyfikatorów: ") + str(n) if n else "")
-        self.changed.emit()
+        parts = [tr("Identyfikatorów: ") + str(n)] if n else []
+        if getattr(self, "_id_fields", ""):
+            parts.append(self._id_fields)
+        self.ids_hint.setText(" · ".join(parts))
+        if emit:
+            self.changed.emit()
 
     def _load_ids(self):
         path, _ = QFileDialog.getOpenFileName(self, tr("Plik z identyfikatorami"), "",
@@ -744,6 +748,12 @@ class ScopePicker(QWidget):
                 if first and first.lower() not in ("id", "id_dzialki", "identyfikator"):
                     ids.append(first)
         self.txt_ids.setPlainText("\n".join(ids))
+
+    def set_id_fields(self, sources: list) -> None:
+        """Podpowiedź w zakładce ID: w jakim polu szukane są identyfikatory wybranych danych."""
+        names = sorted({f"{s.id_field} ({SourcePicker.display_name(s)})" for s in sources if s.id_field})
+        self._id_fields = (tr("Szukane w polu: ") + ", ".join(names)) if names else ""
+        self._ids_changed(emit=False)
 
     def ids(self) -> list:
         return [line.strip() for line in self.txt_ids.toPlainText().splitlines() if line.strip()]
@@ -959,6 +969,8 @@ class OutputPicker(QWidget):
 # ====================================================================== zadania
 
 class TaskRow(QFrame):
+    ended = pyqtSignal()      # zadanie zakończone (sukces, błąd albo anulowanie)
+
     def __init__(self, title: str, task=None, parent=None):
         super().__init__(parent)
         self.setObjectName("taskRow")
@@ -1054,6 +1066,7 @@ class TaskRow(QFrame):
         if not self.running:
             return
         self.running = False
+        self.ended.emit()
         self.bar.setVisible(False)
         self.count.setVisible(False)
         self.btn_cancel.setVisible(False)
@@ -1065,6 +1078,7 @@ class TaskRow(QFrame):
 class TasksPanel(QWidget):
     """Lista zadań; nagłówek zwija listę (nowe zadanie zawsze ją rozwija)."""
     open_log = pyqtSignal()
+    cancel_all_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1088,6 +1102,12 @@ class TasksPanel(QWidget):
         btn_log.setText(tr("Dziennik"))
         btn_log.setToolTip(tr("Szczegóły w dzienniku komunikatów, zakładka PD_GUGiK"))
         btn_log.clicked.connect(self.open_log.emit)
+        self.btn_cancel_all = QToolButton()
+        self.btn_cancel_all.setObjectName("link")
+        self.btn_cancel_all.setText(tr("Anuluj wszystkie"))
+        self.btn_cancel_all.setToolTip(tr("Przerywa wszystkie trwające zadania i kolejkę plików"))
+        self.btn_cancel_all.setVisible(False)
+        self.btn_cancel_all.clicked.connect(self.cancel_all)
         head.addWidget(btn_log)
         btn_clear = QToolButton()
         btn_clear.setObjectName("link")
@@ -1099,6 +1119,11 @@ class TasksPanel(QWidget):
         self.content = QWidget()
         body = QVBoxLayout(self.content)
         body.setContentsMargins(0, 0, 0, 0)
+        # „Anuluj wszystkie” w osobnym wierszu – nagłówek mieści się w wąskim panelu
+        row_all = QHBoxLayout()
+        row_all.addStretch(1)
+        row_all.addWidget(self.btn_cancel_all)
+        body.addLayout(row_all)
         self.rows = QVBoxLayout()
         body.addLayout(self.rows)
         self.empty = hint_label()
@@ -1123,9 +1148,21 @@ class TasksPanel(QWidget):
     def _update_title(self) -> None:
         n = self.rows.count()
         self.title.setText(tr("Zadania") + (f" ({n})" if n else ""))
+        self.btn_cancel_all.setVisible(len(self.running_rows()) >= 2)
+
+    def running_rows(self) -> list:
+        return [w for w in (self.rows.itemAt(i).widget() for i in range(self.rows.count()))
+                if w is not None and w.running]
+
+    def cancel_all(self) -> None:
+        self.cancel_all_requested.emit()       # panel czyści kolejki (np. pliki skorowidza)
+        for row in self.running_rows():
+            row._cancel()
+        self._update_title()
 
     def add(self, title: str, task=None) -> TaskRow:
         row = TaskRow(title, task)
+        row.ended.connect(self._update_title)
         self.rows.insertWidget(0, row)
         self.empty.setVisible(False)
         if self.is_collapsed():

@@ -10,9 +10,9 @@ import os
 
 from qgis.core import (
     Qgis, QgsApplication, QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsGeometry,
-    QgsPointCloudLayer, QgsProject, QgsRasterLayer,
+    QgsPointCloudLayer, QgsProject, QgsRasterLayer, QgsSettings,
 )
-from qgis.PyQt.QtCore import Qt, pyqtSignal
+from qgis.PyQt.QtCore import Qt, QTimer, pyqtSignal
 from qgis.PyQt.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QDockWidget, QFileDialog, QLabel, QListWidget,
     QMessageBox, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
@@ -32,6 +32,8 @@ from .sheets import SheetsDialog, already_downloaded, format_size
 EPSG2180 = "EPSG:2180"
 # Powyżej tylu obiektów w jednym zapytaniu wtyczka pyta, zanim zacznie pobierać
 LARGE_DOWNLOAD = 100_000
+# Tyle plików skorowidza / paczek pobiera się naraz
+PARALLEL_FILES = 3
 STYLE_SHEET = os.path.join(os.path.dirname(os.path.abspath(__file__)), "style.qss")
 
 
@@ -75,6 +77,7 @@ class PD_GUGiKDock(QDockWidget):
         self._draw_tools = {}         # "rect" / "polygon" → narzędzie mapy
         self._raster_queue = []
         self._sheets = None           # otwarte okno arkuszy skorowidza
+        self._batch = self._new_batch()   # podsumowanie serii zadań do komunikatu na końcu
 
         self._build()
         self._validate()
@@ -123,6 +126,7 @@ class PD_GUGiKDock(QDockWidget):
 
         self.tasks = TasksPanel()
         self.tasks.open_log.connect(lambda: self.iface.openMessageLog())
+        self.tasks.cancel_all_requested.connect(self._cancel_queues)
         lay.addWidget(self.tasks)
         lay.addStretch(1)
 
@@ -200,6 +204,10 @@ class PD_GUGiKDock(QDockWidget):
             except (TypeError, RuntimeError):
                 pass
 
+    def _cancel_queues(self) -> None:
+        """„Anuluj wszystkie”: kolejka plików skorowidza nie startuje dalej."""
+        self._raster_queue = []
+
     # ================================================================== komunikaty
 
     def notify(self, text: str, level=Qgis.MessageLevel.Info) -> None:
@@ -225,6 +233,7 @@ class PD_GUGiKDock(QDockWidget):
         if sel.eziudp:
             return False
 
+        self.scope.set_id_fields(sel.sources)
         scope = self.scope.scope()
         self._sync_highlight(scope)
         step, problem = self._problem(sel, scope)
@@ -385,6 +394,26 @@ class PD_GUGiKDock(QDockWidget):
 
     # ================================================================== uruchamianie
 
+    @staticmethod
+    def _new_batch() -> dict:
+        return {"objects": 0, "layers": set(), "files": 0, "problems": 0}
+
+    def _finish_batch(self) -> None:
+        """Gdy skończyło się ostatnie zadanie serii – jeden komunikat z podsumowaniem."""
+        b, self._batch = self._batch, self._new_batch()
+        parts = []
+        if b["layers"]:
+            parts.append(f"{b['objects']:,}".replace(",", " ") + tr(" obiektów w warstwach: ")
+                         + ", ".join(sorted(b["layers"])))
+        if b["files"]:
+            parts.append(tr("plików: ") + str(b["files"]))
+        if not parts and not b["problems"]:
+            return
+        text = tr("Zakończono pobieranie. ") + "; ".join(parts) if parts else tr("Zakończono pobieranie.")
+        if b["problems"]:
+            text += tr(" Zadania z problemami: ") + str(b["problems"]) + tr(" – szczegóły w panelu.")
+        self.notify(text, Qgis.MessageLevel.Warning if b["problems"] else Qgis.MessageLevel.Success)
+
     def _run(self, task, on_done) -> None:
         """Dodaje zadanie do menedżera QGIS i trzyma do niego referencję do końca."""
         self.running_tasks.append(task)
@@ -392,6 +421,8 @@ class PD_GUGiKDock(QDockWidget):
         def forget(*_):
             if task in self.running_tasks:
                 self.running_tasks.remove(task)
+            if not self.running_tasks and not self._raster_queue:
+                self._finish_batch()
         task.done.connect(on_done)
         task.taskCompleted.connect(forget)
         task.taskTerminated.connect(forget)
@@ -438,8 +469,9 @@ class PD_GUGiKDock(QDockWidget):
         teryt = scope.teryt
         package = [s for s in sel.sources if s.opendata and
                    (len(teryt) < 4 or (len(teryt) == 4 and self.output.powiat_method() == "package"))]
-        for s in package:
-            self._download_package(s, teryt)
+        folder = self._ask_folder("package_dir", tr("Folder na paczki danych (opendata)")) if package else ""
+        for s in package if folder else []:
+            self._download_package(s, teryt, folder)
         wfs = [s for s in sel.sources if s not in package]
         if not wfs and sel.skorowidz is None:
             return
@@ -463,15 +495,25 @@ class PD_GUGiKDock(QDockWidget):
                 self._download(s, [q], out, f"TERYT {teryt}", row=rows[s.label])
         self._run(task, got_boundary)
 
-    def _download_package(self, source, teryt) -> None:
+    def _ask_folder(self, key: str, title: str) -> str:
+        """Wybór folderu, zapamiętany między sesjami (QgsSettings)."""
+        setting = f"{layers.SETTINGS_PREFIX}/{key}"
+        folder = QFileDialog.getExistingDirectory(self, title, QgsSettings().value(setting, "", type=str))
+        if folder:
+            QgsSettings().setValue(setting, folder)
+        return folder
+
+    def _download_package(self, source, teryt, folder) -> None:
         url, name = catalog.opendata_package(source, teryt)
-        ext = name.split(".", 1)[1]
-        path, _ = QFileDialog.getSaveFileName(self, tr("Zapisz paczkę danych"), name, f"*.{ext}")
-        if not path:
+        path = os.path.join(folder, name)
+        out = self.output.output()
+        if already_downloaded(path, 0):
+            # ta sama paczka pobrana wcześniej – tylko wczytanie
+            added = layers.add_package(path, out.load_style, out)
+            self.notify(tr("Paczka ") + name + tr(" jest już w folderze – wczytano warstw: ") + str(len(added)))
             return
         task = tasks.FileDownloadTask(url, path, f"{name}")
         row = self.tasks.add(tr("Paczka ") + name, task)
-        out = self.output.output()
 
         def done(saved):
             if not saved:
@@ -483,6 +525,7 @@ class PD_GUGiKDock(QDockWidget):
             except Exception as exc:
                 row.finish(tr("Pobrano, ale nie wczytano: ") + str(exc), ok=False)
                 return
+            self._batch["files"] += 1
             row.finish(tr("Zapisano i wczytano warstw: ") + str(len(added)))
         self._run(task, done)
 
@@ -574,11 +617,16 @@ class PD_GUGiKDock(QDockWidget):
             if n:
                 try:
                     written = layers.write_source(result.features, source, out,
-                                                  scope=scope_text, tag=tag)
+                                                  scope=scope_text, tag=tag,
+                                                  prepared=result.prepared)
                 except Exception as exc:
                     row.finish(tr("Nie udało się zapisać wyników: ") + str(exc), ok=False)
                     return
             names = ", ".join(lyr.name() for lyr in written)
+            self._batch["objects"] += n
+            self._batch["layers"].update(lyr.name() for lyr in written)
+            if result.canceled or result.errors:
+                self._batch["problems"] += 1
             if result.canceled:
                 row.finish(tr("Przerwano. Zapisano obiektów: ") + str(n), ok=False)
             elif not n and result.errors:
@@ -673,14 +721,16 @@ class PD_GUGiKDock(QDockWidget):
         else:
             layer = QgsRasterLayer(path_or_url, name)
         if layer.isValid():
-            layers.add_to_project(layer)
+            out = self.output.output()
+            layer.setName(out.layer_name(name))
+            layers.add_to_project(layer, subgroup=out.prefix)
             return True
         log.warning(f"Nie udało się wczytać: {path_or_url}")
         return False
 
     def _load_rasters(self, sheets, skip_existing=True, folder=None) -> None:
         """Pobiera wybrane arkusze do folderu; pliki już obecne tylko wczytuje."""
-        folder = folder or QFileDialog.getExistingDirectory(self, tr("Folder na pobrane pliki"))
+        folder = folder or self._ask_folder("sheets_dir", tr("Folder na pobrane pliki"))
         if not folder:
             return
         queue, present = [], []
@@ -696,13 +746,17 @@ class PD_GUGiKDock(QDockWidget):
             self.notify(tr("Pominięto plików już obecnych w folderze: ") + str(len(present))
                         + tr(" (wczytano je na mapę)."))
         self._raster_queue.extend(queue)
-        if not any(isinstance(t, tasks.FileDownloadTask) for t in self.running_tasks):
-            self._next_raster()
+        self._next_raster()
+
+    def _files_running(self) -> int:
+        return sum(1 for t in self.running_tasks if isinstance(t, tasks.FileDownloadTask))
 
     def _next_raster(self) -> None:
-        """Pliki skorowidza po jednym, w tle; każdy po pobraniu trafia na mapę."""
-        if not self._raster_queue:
-            return
+        """Pliki skorowidza w tle, po PARALLEL_FILES naraz; każdy po pobraniu trafia na mapę."""
+        while self._raster_queue and self._files_running() < PARALLEL_FILES:
+            self._start_raster()
+
+    def _start_raster(self) -> None:
         url, path, size_mb = self._raster_queue.pop(0)
         task = tasks.FileDownloadTask(url, path, os.path.basename(path))
         size = format_size(size_mb)
@@ -713,11 +767,14 @@ class PD_GUGiKDock(QDockWidget):
         def done(saved):
             if saved:
                 self._load_file_as_layer(saved, os.path.basename(saved))
+                self._batch["files"] += 1
                 row.finish(tr("Zapisano i wczytano."))
             else:
                 row.finish(tr("Nie pobrano: ") + net.friendly(task.error)
                            if task.error else tr("Nie pobrano."), ok=False)
+                self._batch["problems"] += 1
                 if task.isCanceled():
                     self._raster_queue = []
-            self._next_raster()
+            # kolejny plik dopiero po zdjęciu tego z listy trwających zadań
+            QTimer.singleShot(0, self._next_raster)
         self._run(task, done)

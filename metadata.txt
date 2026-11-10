@@ -8,7 +8,7 @@ qgisMinimumVersion=3.40
 qgisMaximumVersion=4.99
 supportsQt6=True
 description=Pobieranie danych z usług GUGiK: EGiB, RCN, PRG, PRNG, pliki ze skorowidzów (ortofotomapa, LIDAR, NMT/NMPT) i powiatowe WFS z EZiUDP. Download data from Polish GUGiK services (cadastre, real estate prices, boundaries, place names, sheet indexes).
-version=1.9.12
+version=1.9.13
 author=Główny Urząd Geodezji i Kartografii (GUGiK) - Łukasz Świątek
 email=uslugi.iip@gugik.gov.pl
 
@@ -27,6 +27,14 @@ repository=https://github.com/GlownyUrzadGeodezjiIKartografii/pobierz_dane_GUGiK
 hasProcessingProvider=yes
 # Uncomment the following line and add your changelog:
 changelog=
+	1.9.13
+		- zapis w tle: obiekty dla warstwy budowane w zadaniu pobierania; w głównym wątku zostaje samo dodanie (100 tys. działek: ok. 0,3 s zamiast kilku sekund zamrożenia QGIS)
+		- komunikat na pasku QGIS po zakończeniu ostatniego zadania: ile obiektów, w jakich warstwach, ile plików i czy były problemy
+		- „Anuluj wszystkie” na liście zadań (przy co najmniej dwóch trwających) – przerywa też kolejkę plików skorowidza
+		- pliki skorowidza pobierane po 3 naraz; folder na pliki i na paczki opendata wybierany raz i zapamiętywany
+		- paczki opendata: jeden wybór folderu zamiast okna „Zapisz jako” dla każdej paczki; paczka już obecna w folderze jest tylko wczytywana
+		- rastry i chmury punktów ze skorowidza dostają prefiks nazw i trafiają do podgrupy GUGiK/<prefiks>
+		- zakładka „ID”: podpowiedź, w jakim polu szukane są identyfikatory wybranych danych
 	1.9.12
 		- duże pobrania: gdy w zakresie jest ponad 100 tys. obiektów, wtyczka zatrzymuje się po pierwszej stronie i pyta („Pobierz mimo to”) zamiast pobierać np. całą Polskę z widoku mapy
 		- pasek postępu pokazuje prawdziwy procent także przy jednym zapytaniu (z liczby obiektów podanej przez serwer)

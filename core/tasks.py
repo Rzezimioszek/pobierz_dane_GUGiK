@@ -41,6 +41,7 @@ class DownloadResult:
     failed: list = field(default_factory=list)   # zapytania (Query) do ponowienia
     canceled: bool = False
     too_large: int = 0      # > 0: wstrzymano – tyle obiektów zgłosił serwer (ponad size_limit)
+    prepared: object = None  # layers.Prepared – obiekty przygotowane w tle do zapisu
 
 
 class TooLarge(Exception):
@@ -93,6 +94,14 @@ class WfsDownloadTask(QgsTask):
                 log.warning(f"[Pobieranie] {self.source.label}, {label}: {exc}")
                 self.result.errors.append((label, net.friendly(exc)))
                 self.result.failed.append(query)
+        if self.result.features and not self.source.split_lines_polygons and not self.isCanceled():
+            # budowa QgsFeature tutaj, w tle – w głównym wątku zostaje samo dodanie do warstwy
+            try:
+                self.result.prepared = layers.prepare(
+                    self.result.features, self.source.geom_type, self.source.numeric_fields,
+                    self.source.unique_field, self.source.label)
+            except Exception as exc:   # zapis i tak zbuduje obiekty sam
+                log.warning(f"[Pobieranie] {self.source.label}: przygotowanie w tle nieudane: {exc}")
         self.setProgress(100)
         return not self.result.canceled
 

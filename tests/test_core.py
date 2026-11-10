@@ -375,3 +375,32 @@ def test_write_100k_features_is_fast_enough():
     start = time.time()
     vl = layers.write(feats, "Duza", "MultiPolygon", "ID_DZIALKI", project=project, load_style=False)
     assert vl.featureCount() == 20000 and time.time() - start < 3.0
+
+
+def test_prepared_in_background_matches_main_thread_write():
+    from qgis.core import QgsProject
+    layers, catalog = mod("layers"), mod("catalog")
+    src = catalog.egib_dzialki()
+    feats = _features(50)
+    prepared = layers.prepare(feats, src.geom_type, src.numeric_fields, src.unique_field)
+    assert len(prepared.features) == 50 and prepared.keys[0] == feats[0]["attrs"]["ID_DZIALKI"]
+    project = QgsProject()
+    fast = layers.write(feats, "A", src.geom_type, src.unique_field, project=project,
+                        load_style=False, prepared=prepared)
+    slow = layers.write(feats, "B", src.geom_type, src.unique_field, project=project, load_style=False)
+    assert fast.featureCount() == slow.featureCount() == 50
+    a = {f["ID_DZIALKI"]: f.geometry().asWkt() for f in fast.getFeatures()}
+    b = {f["ID_DZIALKI"]: f.geometry().asWkt() for f in slow.getFeatures()}
+    assert a == b
+    # dopisanie z tymi samymi ID – szybka ścieżka też pomija duplikaty
+    more = _features(60)
+    layers.write(more, "A", src.geom_type, src.unique_field, project=project, load_style=False,
+                 prepared=layers.prepare(more, src.geom_type, src.numeric_fields, src.unique_field))
+    assert fast.featureCount() == 60
+
+
+def test_download_task_prepares_features(server):
+    tasks, filters = mod("tasks"), mod("filters")
+    task = tasks.WfsDownloadTask(_source(server.url), [filters.bbox("geom", 0, 0, 1, 1)])
+    task.run()
+    assert task.result.prepared is not None and len(task.result.prepared.features) == 1005

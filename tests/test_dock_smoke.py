@@ -711,3 +711,65 @@ def test_area_and_layer_hints(dock):
     assert "Obiektów: 3" in dock.scope.layer_hint.text()
     dock.scope.chk_selected.setChecked(True)
     assert "Obiektów: 0" in dock.scope.layer_hint.text()
+
+
+def test_summary_message_after_last_task_and_id_field_hint(dock):
+    dock.sources.select_labels(["dzialki (EGIB)", "budynki (EGIB)"])
+    dock.scope.tabs.setCurrentIndex(ScopeTab.IDS)
+    assert "ID_DZIALKI" in dock.scope.ids_hint.text() or "id_dzialki" in dock.scope.ids_hint.text().lower()
+    assert "budynki" in dock.scope.ids_hint.text().lower()
+    dock.scope.txt_ids.setPlainText("022602_1.0003.0")
+    dock.iface.bar.messages.clear()
+    dock.start()
+    _wait(dock)
+    last = dock.iface.bar.messages[-1]
+    assert "Zakończono pobieranie" in last[1] and "Dzialki" in last[1]
+
+
+def test_cancel_all_and_parallel_files(dock, tmp_path, monkeypatch):
+    sheets = importlib.import_module(f"{PLUGIN_NAME}.ui.sheets")
+    mod = importlib.import_module(f"{PLUGIN_NAME}.ui.dock")
+    started = []
+
+    class SlowTask(mod.tasks.FileDownloadTask):
+        def run(self):
+            started.append(self.url)
+            while not self.isCanceled():
+                time.sleep(0.02)
+            return False
+    monkeypatch.setattr(mod.tasks, "FileDownloadTask", SlowTask)
+    many = [sheets.Sheet(f"a{i}.tif", f"http://127.0.0.1:9/a{i}.tif", "2025", "", 0, None, {})
+            for i in range(5)]
+    dock._load_rasters(many, True, folder=str(tmp_path))
+    t0 = time.time()
+    while not started and time.time() - t0 < 10:
+        QgsApplication_process()
+    # 3 pliki zlecone naraz (ile wątków je faktycznie uruchomi, zależy od procesora), reszta czeka
+    assert dock._files_running() == 3 and len(dock._raster_queue) == 2
+    assert not dock.tasks.btn_cancel_all.isHidden()
+    dock.tasks.btn_cancel_all.click()
+    _wait(dock)
+    assert dock._raster_queue == [] and len(started) <= 3
+    assert dock.tasks.btn_cancel_all.isHidden()
+
+
+def QgsApplication_process():
+    from qgis.core import QgsApplication
+    QgsApplication.processEvents()
+    time.sleep(0.02)
+
+
+def test_raster_gets_prefix_and_subgroup(dock, tmp_path):
+    from qgis.core import QgsProject
+    import numpy  # noqa: F401 – GDAL w środowisku testów
+    from osgeo import gdal
+    path = str(tmp_path / "arkusz.tif")
+    ds = gdal.GetDriverByName("GTiff").Create(path, 4, 4, 1)
+    ds.SetGeoTransform([284000, 1, 0, 366004, 0, -1])
+    ds = None
+    dock.output.ed_prefix.setText("ProjektA")
+    assert dock._load_file_as_layer(path, "arkusz.tif")
+    lyr = QgsProject.instance().mapLayersByName("ProjektA_arkusz.tif")[0]
+    group = QgsProject.instance().layerTreeRoot().findGroup("GUGiK").findGroup("ProjektA")
+    assert group.findLayer(lyr.id()) is not None
+    dock.output.ed_prefix.clear()
