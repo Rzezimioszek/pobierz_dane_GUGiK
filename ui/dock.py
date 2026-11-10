@@ -18,7 +18,7 @@ from qgis.PyQt.QtWidgets import (
     QMessageBox, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
 )
 
-from . import tr
+from . import eziudp, tr
 from .admin_units import AdminUnits
 from .map_tools import PolygonMapTool, RectangleMapTool, make_band, show_geometry
 from .widgets import (
@@ -62,11 +62,6 @@ class PD_GUGiKDock(QDockWidget):
         self.setObjectName("PD_GUGiKDock")
 
         self.units = AdminUnits.instance()
-        # Atrybuty, z których korzysta okno EZiUDP (szuka ich w rodzicach)
-        self.wojewodztwa = self.units.wojewodztwa
-        self.powiaty = self.units.powiaty
-        self.gminy = self.units.gminy
-        self.name_to_teryt = self.units.name_to_teryt
 
         self.running_tasks = []
         self._tag = ""                # fragment nazwy warstwy dla „osobnej warstwy”
@@ -106,15 +101,8 @@ class PD_GUGiKDock(QDockWidget):
 
         self.output_box, bl = step_box(3, tr("Jak zapisać"))
         self.output = OutputPicker()
-        self.chk_load_style = self.output.chk_style   # używane przez okno EZiUDP
         bl.addWidget(self.output)
         lay.addWidget(self.output_box)
-
-        from ..eziudp_download_dialog import EziudpWidget
-        self.eziudp = EziudpWidget(parent=content)
-        self.eziudp.inject_scope_data(self.wojewodztwa, self.powiaty, self.gminy, self.name_to_teryt)
-        self.eziudp.setVisible(False)
-        lay.addWidget(self.eziudp)
 
         self.hint = hint_label("status")
         lay.addWidget(self.hint)
@@ -183,13 +171,6 @@ class PD_GUGiKDock(QDockWidget):
         if self._sheets is not None:
             self._sheets.close()
         self.scope.cancel_tasks()
-        for attr in ("_task", "_boundary_task"):
-            t = getattr(self.eziudp, attr, None)
-            if t is not None:
-                try:
-                    t.cancel()
-                except RuntimeError:
-                    pass
         self._stop_draw()
         for tool in self._draw_tools.values():
             tool.band.reset(GEOM_POLYGON)
@@ -223,15 +204,11 @@ class PD_GUGiKDock(QDockWidget):
 
     def _validate(self) -> bool:
         sel = self.sources.selection(with_years=False)
-        self.eziudp.setVisible(sel.eziudp)
-        for w in (self.scope_box, self.output_box, self.btn_download, self.hint):
-            w.setVisible(not sel.eziudp)
-        n = len(sel.sources)
-        count = (tr("EZiUDP") if sel.eziudp else tr("skorowidz") if sel.skorowidz is not None
-                 else f"{n} " + (tr("warstwa") if n == 1 else tr("warstwy") if 2 <= n <= 4 else tr("warstw")))
+        n = len(sel.sources) + len(sel.eziudp)
+        count = (tr("skorowidz") if sel.skorowidz is not None
+                 else f"{n} " + (tr("warstwa") if n == 1 else tr("warstwy") if 2 <= n <= 4 else tr("warstw"))
+                 + (tr(" · powiatowe") if sel.eziudp else ""))
         self.source_box.set_state("todo" if sel.empty else "done", "" if sel.empty else count)
-        if sel.eziudp:
-            return False
 
         self.scope.set_id_fields(sel.sources)
         scope = self.scope.scope()
@@ -281,6 +258,8 @@ class PD_GUGiKDock(QDockWidget):
                 return tr("Wybierz warstwę poligonową.")
             if scope.selected_only and scope.layer.selectedFeatureCount() == 0:
                 return tr("Zaznacz obiekty na wybranej warstwie albo odznacz „Tylko zaznaczone”.")
+        if sel.eziudp and eziudp.scope_problem(scope):
+            return eziudp.scope_problem(scope)
         if scope.kind in ("ids", "obreb") and sel.skorowidz is not None:
             return tr("Dla skorowidzów wybierz zakres: jednostkę, mapę albo warstwę.")
         if scope.kind == "ids" and not scope.ids:
@@ -437,6 +416,9 @@ class PD_GUGiKDock(QDockWidget):
         self._tag = scope.tag()
         self._clear_highlight()   # zakres przyjęty – podświetlenie już niepotrzebne
 
+        if sel.eziudp:
+            eziudp.start(self, sel, scope, out)
+            return
         if scope.kind == "teryt":
             self._start_teryt(sel, scope, out)
         elif scope.kind in ("extent", "rect"):

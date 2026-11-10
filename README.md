@@ -30,7 +30,7 @@ Zaznacz warstwy na liście albo wpisz fragment nazwy w polu wyszukiwania.
 | PRG | punkty adresowe, ulice, place, granice jednostek administracyjnych i ewidencyjnych, granice morskie |
 | PRNG | urzędowe i pozostałe nazwy miejscowości oraz obiektów fizjograficznych |
 | Skorowidze | ortofotomapa, prawdziwa ortofotomapa, LIDAR, NMT i NMPT (KRON86 i EVRF2007) |
-| Zaawansowane | usługi powiatowe z EZiUDP: osnowa (BDSOG), EGiB z punktami granicznymi, użytkami i konturami, RCN, BDOT500 |
+| Usługi powiatowe (EZiUDP) | osnowa (BDSOG), EGiB z punktami granicznymi, użytkami i konturami, RCN, BDOT500 – prosto z usług WFS powiatów |
 
 ### 2. Skąd
 
@@ -74,7 +74,9 @@ Pod tabelą widać łączny rozmiar wybranych plików. Pliki już obecne w folde
 
 ## Powiatowe usługi WFS (EZiUDP)
 
-*Zaawansowane → Usługi powiatowe (EZiUDP)* pobiera dane z usług WFS zgłoszonych przez powiaty do Ewidencji Zbiorów i Usług Danych Przestrzennych: osnowę poziomą i wysokościową (BDSOG), EGiB (działki, budynki, punkty graniczne oraz użytki gruntowe i kontury klasyfikacyjne – jeśli powiat je udostępnia), RCN i BDOT500. Pola zostają takie, jak podaje powiat.
+Grupa *Usługi powiatowe (EZiUDP)* w kroku 1 pobiera dane z usług WFS zgłoszonych przez powiaty do Ewidencji Zbiorów i Usług Danych Przestrzennych: osnowę poziomą i wysokościową (BDSOG), EGiB (działki, budynki, punkty graniczne oraz użytki gruntowe i kontury klasyfikacyjne – jeśli powiat je udostępnia), RCN i BDOT500. Pola zostają takie, jak podaje powiat.
+
+Działa to tak samo jak dla usług zbiorczych: zakres wybierasz w kroku 2 (jednostka, mapa albo warstwa – wtyczka sama ustala, których powiatów dotyczy), zapis w kroku 3, a postęp widać na liście zadań. Każdy powiat trafia do osobnej warstwy, np. `Dzialki_1465`. Gdy usługa któregoś powiatu nie odpowie, **Ponów** powtarza tylko ten powiat.
 
 ## Algorytmy Processing
 

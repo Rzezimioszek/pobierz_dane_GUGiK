@@ -125,7 +125,10 @@ def test_eziudp_layers_created_only_in_finished():
     from qgis.core import QgsGeometry, QgsProject, QgsVectorLayer
     task_mod = mod("eziudp_wfs_task")
     QgsProject.instance().removeAllMapLayers()
-    task = task_mod.EziudpWfsTask([], ["bdsog_poziom"])
+    layers = mod("core.layers")
+    task = task_mod.EziudpWfsTask([], ["bdsog_poziom"], output=layers.Output(None, True))
+    reports = []
+    task.done.connect(reports.append)
     src = QgsVectorLayer("Point?crs=epsg:2180&field=nr:string", "wfs", "memory")
     fields, _, _ = task_mod._read_snapshot(src, None, "1465", "u", lambda: False)
     task._pending.append({"name": "Osnowa_pozioma_1465", "fields": fields, "geom_type": "Point",
@@ -136,6 +139,7 @@ def test_eziudp_layers_created_only_in_finished():
     task.finished(True)
     vl = QgsProject.instance().mapLayersByName("Osnowa_pozioma_1465")[0]
     assert vl.featureCount() == 1 and vl.renderer() is not None
+    assert reports and reports[0].written == [vl]
     QgsProject.instance().removeAllMapLayers()
 
 

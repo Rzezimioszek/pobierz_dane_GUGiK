@@ -135,8 +135,8 @@ def test_optional_layer_missing_is_skipped_not_error():
     assert "Pominięte" in text and "Błędy" not in text
 
 
-def test_direct_gml_fallback_pages_and_keeps_own_params():
-    """Gdy dostawca WFS QGIS odrzuci usługę – GetFeature stronami i własny parser."""
+def test_direct_client_pages_and_keeps_own_params():
+    """Bez prostokąta zakresu: GetFeature stronami, własny parser, parametry usługi zachowane."""
     import os
     os.environ["NO_PROXY"] = "127.0.0.1,localhost"
     from fake_wfs import FakeWfs
@@ -151,4 +151,55 @@ def test_direct_gml_fallback_pages_and_keeps_own_params():
     assert fields is None and len(feats) == 1005 and geom_type.startswith("Multi")
     assert [int(r["startIndex"]) for r in srv.requests] == [0, 1000]
     assert srv.requests[0]["map"] == "minsk" and srv.requests[0]["typenames"] == "ms:uzytki"
-    assert feats[0]["attrs"]["teryt_powiatu"] == "1412"
+    assert feats[0]["attrs"]["teryt_powiatu"] == "1412" and feats[0]["attrs"]["gml_id"] == "d.0"
+
+
+def test_direct_client_tiles_with_rect_and_rejects_wrong_axes():
+    import os
+    os.environ["NO_PROXY"] = "127.0.0.1,localhost"
+    import pytest
+    from fake_wfs import FakeWfs
+    from qgis.core import QgsRectangle
+    task = importlib.import_module(f"{PLUGIN_NAME}.eziudp_wfs_task")
+    srv = FakeWfs(total=2500, spatial=True, unstable=True)
+    try:
+        _, _, feats = task._read_direct(srv.url, "ms:dzialki", QgsRectangle(284000, 366000, 284390, 367990),
+                                        None, "0226", srv.url, lambda: False)
+        assert len(feats) == 2000 and len({f["attrs"]["gml_id"] for f in feats}) == 2000
+        assert all(int(r["startIndex"]) == 0 and "EPSG::2180" in r["bbox"] for r in srv.requests)
+        # serwer ignoruje BBOX i oddaje obiekty z innego miejsca → nie udajemy, że to wynik
+        srv.spatial = False
+        srv.total = 5
+        with pytest.raises(RuntimeError, match="poza pytanym zakresem"):
+            task._read_direct(srv.url, "ms:dzialki", QgsRectangle(600000, 500000, 600100, 500100),
+                              None, "0226", srv.url, lambda: False)
+    finally:
+        srv.close()
+
+
+def test_task_falls_back_to_qgis_provider(monkeypatch):
+    """Własny klient zawiódł → dostawca WFS QGIS; obie drogi zawiodły → błąd i para do ponowienia."""
+    from qgis.core import QgsFields, QgsGeometry
+    task = importlib.import_module(f"{PLUGIN_NAME}.eziudp_wfs_task")
+    layers = importlib.import_module(f"{PLUGIN_NAME}.core.layers")
+    ez = importlib.import_module(f"{PLUGIN_NAME}.eziudp_client")
+    monkeypatch.setattr(ez.EziudpClient, "get_wfs_urls", lambda self, t, z: ez.EziudpResult(
+        success=True, teryt=t, zbior=z, records=[ez.EziudpRecord(url_wfs="http://127.0.0.1:9/wfs")]))
+    monkeypatch.setattr(ez.EziudpClient, "get_layer_names", lambda self, u, z: ["ms:dzialki"])
+
+    def boom(*a, **k):
+        raise RuntimeError("zły GML")
+    monkeypatch.setattr(task, "_read_direct", boom)
+    feat = {"geom": QgsGeometry.fromWkt("POINT(1 2)"), "attrs": {"teryt_powiatu": "0226"}}
+    monkeypatch.setattr(task.EziudpWfsTask, "_read_with_provider",
+                        lambda self, *a: (QgsFields(), "Point", [feat], "1.1.0"))
+    t = task.EziudpWfsTask(["0226"], ["egib_dzi"], output=layers.Output(None, False))
+    assert t.run() and t._report.total_features == 1 and not t._report.failed_pairs
+    assert t._pending[0]["name"] == "Dzialki_0226"
+
+    def boom2(self, *a):
+        raise RuntimeError("nie WFS")
+    monkeypatch.setattr(task.EziudpWfsTask, "_read_with_provider", boom2)
+    t = task.EziudpWfsTask(["0226"], ["egib_dzi"], output=layers.Output(None, False))
+    t.run()
+    assert t._report.failed_pairs == [("0226", "egib_dzi")] and "zły GML" in t._report.errors[0]

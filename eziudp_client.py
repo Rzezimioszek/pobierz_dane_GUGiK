@@ -19,14 +19,8 @@ except ImportError:
     from xml.etree import ElementTree as ET  # nosec B405 – XML z usług GUGiK; defusedxml, gdy jest
 
 import requests
-from requests.adapters import HTTPAdapter
 
 from qgis.core import QgsMessageLog, Qgis
-
-try:
-    from urllib3.util.retry import Retry
-except ImportError:
-    from requests.packages.urllib3.util.retry import Retry
 
 LOG_TAG = "PD_GUGiK"
 EZIUDP_API_URL = "https://integracja.gugik.gov.pl/eziudp/api.php"
@@ -94,29 +88,9 @@ ZBIOR_CONFIG: dict = {
 
 
 def _make_session() -> requests.Session:
-    session = requests.Session()
-    try:
-        retry = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["GET"],
-        )
-    except TypeError:
-        retry = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-            method_whitelist=["GET"],
-        )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    session.headers.update({
-        "User-Agent": "QGIS-PobieranieGUGiK/1.0",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    })
-    return session
+    """Sesja jak w reszcie wtyczki – z proxy ustawionym w QGIS."""
+    from .core import net
+    return net.make_session()
 
 
 @dataclass
@@ -141,6 +115,7 @@ class EziudpClient:
 
     def __init__(self):
         self._session = _make_session()
+        self.session = self._session
 
     # ------------------------------------------------------------------
     # Publiczne API

@@ -1,25 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-Zadanie QgsTask dodające warstwy z powiatowych usług WFS przez eziudp
-w trybie snapshot (WFS provider → kopia do warstwy memory).
+Pobieranie z powiatowych usług WFS zgłoszonych do EZiUDP.
 
-Architektura:
-  - Dla każdego powiatu × wybranej warstwy budowany jest URI WFS
-    z parametrami BBOX lub filtrem geometrii (subsetString OGC BBOX).
-  - QgsVectorLayer jest tworzona z providerem "WFS" – QGIS sam pobiera
-    dane przez paginację WFS 2.0 (fallback: 1.1).
-  - Obiekty są czytane w wątku zadania do pamięci (snapshot), a warstwy
-    (tymczasowe albo w GPKG, przez core.layers) powstają w finished(),
-    w głównym wątku – projekt QGIS nie jest dotykany z wątku w tle.
-  - Warstwa dostaje styl QML z data/.
-  - Brak harmonizacji schematu – pola zachowane tak jak ze źródła WFS.
+Dla każdego powiatu × wybranej warstwy:
+  1. adres usługi z EZiUDP i nazwa warstwy z GetCapabilities,
+  2. pobranie własnym klientem: GetFeature WFS 2.0 z parametrem BBOX, duże
+     zakresy kaflami (core/tiles.py) – bez gubienia obiektów przy stronicowaniu,
+  3. gdy usługa tego nie przyjmie (inna wersja WFS, inny układ, błąd) albo
+     zakres wyjdzie pusty – dostawca WFS QGIS, jak we wcześniejszych wersjach.
 
-Filtrowanie zakresu:
-  - TERYT powiatu → brak filtra (cały powiat)
-  - TERYT gminy / extend / warstwa → BBOX w URI WFS
-    ("restrictToRequestBBOX=1" + "bbox=…") oraz subsetString
-    z OGC BBOX do lokalnego przycinania po pobraniu jeśli serwer
-    nie zastosował filtra
+Obiekty są czytane w wątku zadania, a warstwy (tymczasowe albo w GPKG, przez
+core.layers) powstają w finished(), w głównym wątku. Pola zostają takie, jak
+podaje powiat. Zakres, miejsce zapisu i prefiks przychodzą z kroków 2 i 3 panelu.
 """
 import contextlib
 from dataclasses import dataclass, field
@@ -27,7 +19,7 @@ from typing import Optional
 
 from qgis.core import (
     QgsTask, QgsMessageLog, Qgis,
-    QgsVectorLayer, QgsProject, QgsField, QgsFields,
+    QgsVectorLayer, QgsField, QgsFields,
     QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsCoordinateTransformContext,
     QgsGeometry, QgsRectangle,
     QgsWkbTypes,
@@ -37,6 +29,7 @@ from qgis.PyQt.QtCore import pyqtSignal
 from .eziudp_client import EziudpClient
 from .bdsog_harmonizer import get_harmonizer
 from .core import gml, layers, net
+from .core.tiles import TileFetcher
 from .qt_compat import FIELD_STRING
 
 LOG_TAG = "PD_GUGiK"
@@ -167,6 +160,9 @@ class EziudpWfsReport:
     layers: list = field(default_factory=list)   # lista WfsLayerReport
     errors: list = field(default_factory=list)
     skipped: list = field(default_factory=list)   # warstwy opcjonalne, których usługa nie ma
+    failed_pairs: list = field(default_factory=list)   # [(teryt, klucz warstwy)] do ponowienia
+    written: list = field(default_factory=list)        # warstwy QGIS utworzone / uzupełnione
+    canceled: bool = False
 
     def format_summary(self) -> str:
         lines = [
@@ -310,23 +306,33 @@ def _read_snapshot(
     return fields, QgsWkbTypes.displayString(wfs_layer.wkbType()), features
 
 
-_DIRECT_PAGE = 1000
-_DIRECT_MAX_PAGES = 300
+URN_2180 = "urn:ogc:def:crs:EPSG::2180"
+# Zgrubne granice Polski w EPSG:2180 – kontrola, czy współrzędne z usługi mają sens
+_POLAND = QgsRectangle(100000, 80000, 900000, 800000)
+
+
+def _plausible(features: list, rect: Optional[QgsRectangle]) -> bool:
+    """Czy choć jeden obiekt leży tam, gdzie pytaliśmy (zły układ / zamienione osie → False)."""
+    area = QgsRectangle(rect) if rect is not None else QgsRectangle(_POLAND)
+    if rect is not None:
+        area.grow(max(1000.0, rect.width(), rect.height()))
+    return any(f["geom"].boundingBox().intersects(area) for f in features)
 
 
 def _read_direct(
     base_url: str,
     layer_name: str,
-    bbox_rect: Optional[QgsRectangle],
+    rect: Optional[QgsRectangle],
     clip_geom: Optional[QgsGeometry],
     teryt: str,
     wfs_url: str,
     task_check_cancelled,
+    on_progress=None,
 ) -> tuple:
     """
-    Zapasowa ścieżka, gdy dostawca WFS QGIS odrzuci usługę (np. niepoprawny XML
-    w GetCapabilities): GetFeature WFS 2.0 stronami i własny parser GML.
+    Własny klient: GetFeature WFS 2.0 z BBOX, duże zakresy kaflami, własny parser GML.
     Zwraca to samo co _read_snapshot (pola None = tekstowe z atrybutów).
+    Błąd usługi albo nieprawdopodobne współrzędne → wyjątek (wtedy dostawca WFS QGIS).
     """
     session = net.make_session()
     # Parametry „własne” usługi z adresu EZiUDP (np. map=...) zostają w zapytaniu
@@ -334,47 +340,48 @@ def _read_direct(
     own = {k: v for k, v in parse_qsl(urlsplit(wfs_url).query)
            if k.lower() not in ("service", "request", "version", "acceptversions",
                                 "typename", "typenames")}
-    params = {
-        **own,
-        "service": "WFS", "version": "2.0.0", "request": "GetFeature",
-        "typenames": layer_name, "srsName": "urn:ogc:def:crs:EPSG::2180",
-        "count": _DIRECT_PAGE,
-    }
-    if bbox_rect is not None:
-        # URN EPSG:2180 – kolejność osi N, E
-        params["bbox"] = (f"{bbox_rect.yMinimum()},{bbox_rect.xMinimum()},"
-                          f"{bbox_rect.yMaximum()},{bbox_rect.xMaximum()},"
-                          f"urn:ogc:def:crs:EPSG::2180")
+
+    def request(r, depth, start, count):
+        params = {
+            **own,
+            "service": "WFS", "version": "2.0.0", "request": "GetFeature",
+            "typenames": layer_name, "srsName": URN_2180,
+            "count": count, "startIndex": start,
+        }
+        if r is not None:
+            # URN EPSG:2180 – kolejność osi N, E
+            params["bbox"] = f"{r.yMinimum()},{r.xMinimum()},{r.yMaximum()},{r.xMaximum()},{URN_2180}"
+        text = net.get(session, base_url, params, timeout=180).text
+        error = gml.service_exception(text)
+        if error:
+            raise RuntimeError(f"Serwer zwrócił błąd: {error}")
+        return text
+
     features, geom_type = [], ""
     try:
-        for page in range(_DIRECT_MAX_PAGES):
-            if task_check_cancelled():
-                break
-            params["startIndex"] = page * _DIRECT_PAGE
-            text = net.get(session, base_url, params, timeout=180).text
-            error = gml.service_exception(text)
-            if error:
-                raise RuntimeError(f"Serwer zwrócił błąd: {error}")
-            batch = gml.parse_features(text)
-            for f in batch:
-                geom = f["geom"] if isinstance(f["geom"], QgsGeometry) else QgsGeometry.fromWkt(f["geom"])
-                if geom is None or geom.isEmpty():
-                    continue
-                if clip_geom is not None and not geom.intersects(clip_geom):
-                    continue
-                if not geom_type:
-                    geom_type = QgsWkbTypes.displayString(QgsWkbTypes.multiType(geom.wkbType()))
-                attrs = dict(f["attrs"])
-                if f.get("id"):
-                    attrs.setdefault("gml_id", f["id"])   # jak w dostawcy WFS QGIS – do usuwania duplikatów
-                attrs["teryt_powiatu"] = teryt
-                attrs["zrodlo_wfs"] = wfs_url
-                features.append({"geom": geom, "attrs": attrs})
-            if len(batch) < _DIRECT_PAGE:
-                break
+        fetcher = TileFetcher(request, task_check_cancelled, on_progress=on_progress,
+                              label=f"{layer_name} ({teryt})")
+        raw = fetcher.fetch(rect, clip_geom)
     finally:
         with contextlib.suppress(Exception):
             session.close()
+    for f in raw:
+        geom = f["geom"] if isinstance(f["geom"], QgsGeometry) else QgsGeometry.fromWkt(f["geom"])
+        if geom is None or geom.isEmpty():
+            continue
+        attrs = dict(f["attrs"])
+        if f.get("id"):
+            attrs.setdefault("gml_id", f["id"])   # jak w dostawcy WFS QGIS – do usuwania duplikatów
+        attrs["teryt_powiatu"] = teryt
+        attrs["zrodlo_wfs"] = wfs_url
+        features.append({"geom": geom, "attrs": attrs})
+    if features and not _plausible(features, rect):
+        raise RuntimeError("współrzędne z usługi leżą poza pytanym zakresem "
+                           "(inny układ albo kolejność osi)")
+    if clip_geom is not None:
+        features = layers.clip(features, clip_geom)
+    if features:
+        geom_type = QgsWkbTypes.displayString(QgsWkbTypes.multiType(features[0]["geom"].wkbType()))
     return None, geom_type, features
 
 
@@ -384,92 +391,63 @@ def _read_direct(
 
 class EziudpWfsTask(QgsTask):
     """
-    Dodaje warstwy WFS jako snapshot (memory) dla wybranych powiatów.
+    Pobiera wybrane warstwy z usług powiatowych; osobna warstwa na powiat × typ
+    danych, np. „Dzialki_0401”, „Dzialki_0402” (z prefiksem z kroku 3).
 
-    Osobna warstwa memory na każdy powiat × typ danych,
-    np. "Dzialki_0401", "Dzialki_0402".
-
-    Filtrowanie zakresu:
-      - bbox_wkt  → BBOX przekazany do URI WFS + lokalne przycinanie
-      - clip_geom_wkt → precyzyjne lokalne przycinanie po pobraniu
-
-    Parametry zgodne z EziudpDownloadTask – możliwa wymiana w dialog.
+    rect / clip_geom (EPSG:2180) – zakres z kroku 2; bez nich cały powiat.
+    pairs – ponowienie: tylko wskazane (teryt, klucz warstwy).
+    Sygnały (główny wątek): done(EziudpWfsReport), count_changed(int).
     """
 
-    downloadFinished = pyqtSignal(list, object)
-    progressMessage = pyqtSignal(str)
-    progressChanged = pyqtSignal(float)
+    done = pyqtSignal(object)
+    count_changed = pyqtSignal(int)
 
     def __init__(
         self,
         teryt_list: list,
         layer_keys: list,
-        bbox_wkt: Optional[str] = None,
-        clip_geom_wkt: Optional[str] = None,
-        plugin_dir: str = "",
-        load_style: bool = False,
+        rect: Optional[QgsRectangle] = None,
+        clip_geom: Optional[QgsGeometry] = None,
+        output: Optional[layers.Output] = None,
+        pairs: Optional[list] = None,
+        scope_text: str = "",
+        powiat_rects: Optional[dict] = None,
     ):
         labels = [AVAILABLE_LAYERS_BY_KEY[k]["label"] for k in layer_keys
                   if k in AVAILABLE_LAYERS_BY_KEY]
-        task_label = f"eziudp WFS: {', '.join(labels)} ({len(teryt_list)} powiatów)"
-
-        super().__init__(task_label, QgsTask.Flag.CanCancel)
+        super().__init__(f"PD_GUGiK – EZiUDP: {', '.join(labels)} ({len(teryt_list)} pow.)",
+                         QgsTask.Flag.CanCancel)
         self.teryt_list = [str(t).strip() for t in teryt_list if str(t).strip()]
-        self.layer_keys = layer_keys
-        self.bbox_wkt = bbox_wkt
-        self.clip_geom_wkt = clip_geom_wkt
-        self.plugin_dir = plugin_dir
-        self.load_style = load_style
-
-        # Miejsce zapisu i nazwy warstw w projekcie – odczytane tu, w głównym wątku
-        self.output = layers.Output.from_settings(load_style)
-        self._existing_names = {lyr.name() for lyr in QgsProject.instance().mapLayers().values()}
+        self.layer_keys = [k for k in layer_keys if k in AVAILABLE_LAYERS_BY_KEY]
+        self.pairs = set(pairs) if pairs else {(t, k) for t in self.teryt_list for k in self.layer_keys}
+        self.scope_text = scope_text
+        # Miejsce zapisu ustalone w głównym wątku (krok 3 panelu albo ustawienia)
+        self.output = output or layers.Output.from_settings()
         self._pending: list = []   # warstwy do utworzenia w finished()
-
         self._eziudp = EziudpClient()
         self._report = EziudpWfsReport(total_teryts=len(self.teryt_list))
-        self.exception: Optional[Exception] = None
-
-        # Przelicz BBOX raz – używany wielokrotnie
-        self._bbox_rect: Optional[QgsRectangle] = None
-        if bbox_wkt:
-            g = QgsGeometry.fromWkt(bbox_wkt)
-            if g and not g.isEmpty():
-                self._bbox_rect = g.boundingBox()
-
-        self._clip_geom: Optional[QgsGeometry] = None
-        if clip_geom_wkt:
-            g = QgsGeometry.fromWkt(clip_geom_wkt)
-            if g and not g.isEmpty():
-                self._clip_geom = g
+        self._bbox_rect = QgsRectangle(rect) if rect is not None and not rect.isEmpty() else None
+        self._clip_geom = clip_geom if clip_geom is not None and not clip_geom.isEmpty() else None
+        # Cały powiat: prostokąt powiatu pozwala pobierać kaflami zamiast stronicować
+        self._powiat_rects = powiat_rects or {}
+        self._count = 0
+        self._steps_done = 0
 
     # ------------------------------------------------------------------
     # QgsTask
     # ------------------------------------------------------------------
 
     def run(self) -> bool:
-        total = len(self.teryt_list)
-
         for i, teryt in enumerate(self.teryt_list):
             if self.isCanceled():
                 return False
-
-            progress = int((i / total) * 100)
-            self.setProgress(progress)
-            self.progressChanged.emit(float(progress))
-
-            msg = f"[{i + 1}/{total}] TERYT {teryt}"
-            self.progressMessage.emit(msg)
-            QgsMessageLog.logMessage(f"[EziudpWfsTask] {msg}", LOG_TAG, Qgis.MessageLevel.Info)
-
-            powiat_ok = self._process_one_teryt(teryt)
-            if powiat_ok:
+            QgsMessageLog.logMessage(f"[EziudpWfsTask] [{i + 1}/{len(self.teryt_list)}] TERYT {teryt}",
+                                     LOG_TAG, Qgis.MessageLevel.Info)
+            if self._process_one_teryt(teryt):
                 self._report.successful += 1
             else:
                 self._report.failed += 1
-
         self.setProgress(100)
-        self.progressChanged.emit(100.0)
         return True
 
     def finished(self, result: bool):
@@ -480,127 +458,107 @@ class EziudpWfsTask(QgsTask):
                 # do warstwy; gml_id pomija obiekty, które już w niej są.
                 first = item["features"][0]["attrs"] if item["features"] else {}
                 unique = "gml_id" if first.get("gml_id") not in (None, "") else None
-                layers.write(item["features"], item["name"], item["geom_type"], unique,
-                             style=item["style"], load_style=self.output.load_style,
-                             fields=item["fields"], gpkg_path=self.output.gpkg_path,
-                             info=item.get("info"), group=self.output.prefix)
+                name = item["name"]
+                if self.output.separate:
+                    name = layers.unique_name(name, gpkg_path=self.output.gpkg_path)
+                vl = layers.write(item["features"], name, item["geom_type"], unique,
+                                  style=item["style"], load_style=self.output.load_style,
+                                  fields=item["fields"], gpkg_path=self.output.gpkg_path,
+                                  info=item.get("info"), group=self.output.prefix)
+                if vl is not None:
+                    self._report.written.append(vl)
             except Exception as exc:
                 msg = f"Zapis warstwy {item['name']} nie powiódł się: {exc}"
                 QgsMessageLog.logMessage(f"[EziudpWfsTask] {msg}", LOG_TAG, Qgis.MessageLevel.Critical)
                 self._report.errors.append(msg)
         self._pending = []
-
-        status = "Zakończono" if result else (
-            "Anulowano" if self.isCanceled() else "Błąd"
-        )
+        self._report.canceled = self.isCanceled()
+        with contextlib.suppress(Exception):
+            self._eziudp.session.close()
         QgsMessageLog.logMessage(
-            f"[EziudpWfsTask] {status}: {self._report.format_summary()}",
-            LOG_TAG,
-            Qgis.MessageLevel.Success if result else Qgis.MessageLevel.Warning,
+            f"[EziudpWfsTask] {'Zakończono' if result else 'Przerwano'}: {self._report.format_summary()}",
+            LOG_TAG, Qgis.MessageLevel.Success if result else Qgis.MessageLevel.Warning,
         )
-        # Emituje pustą listę – dane są już w warstwach QGIS
-        self.downloadFinished.emit([], self._report)
-
-    def cancel(self):
-        super().cancel()
+        self.done.emit(self._report)
 
     # ------------------------------------------------------------------
     # Logika dla jednego powiatu
     # ------------------------------------------------------------------
 
+    def _fail(self, teryt: str, keys: list, msg: str, optional: bool = False) -> None:
+        (self._report.skipped if optional else self._report.errors).append(msg)
+        if not optional:
+            self._report.failed_pairs.extend((teryt, k) for k in keys)
+
+    def _step(self) -> None:
+        self._steps_done += 1
+        self.setProgress(min(99.0, 100.0 * self._steps_done / max(1, len(self.pairs))))
+
     def _process_one_teryt(self, teryt: str) -> bool:
         """Przetwarza wszystkie wybrane warstwy dla jednego powiatu."""
         any_ok = False
 
-        # Grupuj klucze po zbiorze – jedno GetCapabilities na zbior
+        # Grupuj klucze po zbiorze – jedno GetCapabilities na zbiór
         zbior_to_keys: dict = {}
         for key in self.layer_keys:
-            cfg = AVAILABLE_LAYERS_BY_KEY.get(key)
-            if cfg:
-                zbior_to_keys.setdefault(cfg["zbior"], []).append(key)
+            if (teryt, key) in self.pairs:
+                zbior_to_keys.setdefault(AVAILABLE_LAYERS_BY_KEY[key]["zbior"], []).append(key)
 
         for zbior, keys in zbior_to_keys.items():
             if self.isCanceled():
                 return any_ok
 
-            # Pobierz URL WFS z eziudp
             eziudp_result = self._eziudp.get_wfs_urls(teryt, zbior)
             if not eziudp_result.success or not eziudp_result.records:
-                err = eziudp_result.error_message or "Brak usługi WFS w EZiUDP"
-                QgsMessageLog.logMessage(
-                    f"[EziudpWfsTask] TERYT {teryt} zbior={zbior}: {err}",
-                    LOG_TAG, Qgis.MessageLevel.Warning,
-                )
-                self._report.errors.append(f"TERYT {teryt} [{zbior}]: {err}")
+                err = eziudp_result.error_message or "powiat nie zgłosił usługi WFS do EZiUDP"
+                QgsMessageLog.logMessage(f"[EziudpWfsTask] TERYT {teryt} zbior={zbior}: {err}",
+                                         LOG_TAG, Qgis.MessageLevel.Warning)
+                self._fail(teryt, keys, f"TERYT {teryt} [{zbior.upper()}]: {err}")
+                for _ in keys:
+                    self._step()
                 continue
 
             wfs_url = eziudp_result.records[0].url_wfs
             base_url = wfs_url.split("?")[0]
-
-            # Pobierz listę warstw z GetCapabilities
             all_wfs_layers = self._eziudp.get_layer_names(wfs_url, zbior)
 
             for key in keys:
                 if self.isCanceled():
                     return any_ok
-
                 layer_cfg = AVAILABLE_LAYERS_BY_KEY[key]
                 pattern = layer_cfg.get("layer_pattern")
                 wfs_layer_name = self._pick_wfs_layer(all_wfs_layers, pattern)
 
                 if not wfs_layer_name:
-                    msg = (
-                        f"TERYT {teryt}: usługa powiatu nie udostępnia warstwy "
-                        f"„{layer_cfg['label']}”"
-                    )
+                    msg = f"TERYT {teryt}: usługa powiatu nie udostępnia warstwy „{layer_cfg['label']}”"
                     QgsMessageLog.logMessage(
                         f"[EziudpWfsTask] {msg} (wzorzec={pattern!r}, warstwy: {all_wfs_layers})",
-                        LOG_TAG, Qgis.MessageLevel.Info,
-                    )
-                    if layer_cfg.get("optional"):
-                        self._report.skipped.append(msg)
-                    else:
-                        self._report.errors.append(msg)
+                        LOG_TAG, Qgis.MessageLevel.Info)
+                    # brak warstwy w usłudze nie zniknie po ponowieniu – bez „Ponów”
+                    (self._report.skipped if layer_cfg.get("optional") else self._report.errors).append(msg)
+                    self._step()
                     continue
 
-                report = self._fetch_one_layer(
-                    teryt=teryt,
-                    key=key,
-                    base_url=base_url,
-                    wfs_url=wfs_url,
-                    wfs_layer_name=wfs_layer_name,
-                )
+                report = self._fetch_one_layer(teryt, key, base_url, wfs_url, wfs_layer_name)
                 self._report.layers.append(report)
                 self._report.total_features += report.feature_count
-
+                self._step()
                 if report.success:
                     any_ok = True
-                    self.progressMessage.emit(
-                        f"  TERYT {teryt} '{wfs_layer_name}': "
-                        f"{report.feature_count} obiektów → '{key}_{teryt}'"
-                    )
                 else:
-                    self._report.errors.append(
-                        f"TERYT {teryt} [{key}]: {report.error}"
-                    )
+                    self._fail(teryt, [key], f"TERYT {teryt} [{layer_cfg['label']}]: {report.error}")
 
         return any_ok
 
-    def _fetch_one_layer(
-        self,
-        teryt: str,
-        key: str,
-        base_url: str,
-        wfs_url: str,
-        wfs_layer_name: str,
-    ) -> WfsLayerReport:
-        """
-        Pobiera jedną warstwę WFS dla jednego powiatu jako snapshot.
+    def _progress(self, base: int):
+        def on_progress(got: int) -> None:
+            self.count_changed.emit(base + got)
+        return on_progress
 
-        Zwraca WfsLayerReport z wynikami.
-        """
-        report = WfsLayerReport(teryt=teryt, key=key, wfs_url=wfs_url,
-                                wfs_layer=wfs_layer_name)
+    def _fetch_one_layer(self, teryt: str, key: str, base_url: str, wfs_url: str,
+                         wfs_layer_name: str) -> WfsLayerReport:
+        """Jedna warstwa jednego powiatu: własny klient z kaflami, w razie czego dostawca WFS QGIS."""
+        report = WfsLayerReport(teryt=teryt, key=key, wfs_url=wfs_url, wfs_layer=wfs_layer_name)
 
         # Nazwa warstwy i styl: z konfiguracji warstwy, a jeśli brak – z harmonizatora
         cfg = AVAILABLE_LAYERS_BY_KEY[key]
@@ -608,111 +566,80 @@ class EziudpWfsTask(QgsTask):
         if not cfg.get("layer_name"):
             harmonizer = get_harmonizer(cfg["zbior"], wfs_layer_name)
         base_layer_name = cfg.get("layer_name") or (harmonizer.LAYER_NAME if harmonizer else key)
-        style_name = (cfg.get("style") or getattr(harmonizer, "STYLE", None)
-                      or base_layer_name)
-        mem_layer_name = self.output.layer_name(f"{base_layer_name}_{teryt}")
+        style_name = (cfg.get("style") or getattr(harmonizer, "STYLE", None) or base_layer_name)
+        layer_name = self.output.layer_name(f"{base_layer_name}_{teryt}")
 
-        # Próbuj WFS 2.0, fallback na 1.1
-        wfs_vl, version = _try_wfs_layer(
-            base_url, wfs_layer_name, self._bbox_rect
-        )
-
-        if wfs_vl is None:
-            # Ostatnia próba: bez BBOX (niektóre serwery odrzucają BBOX w URI)
-            if self._bbox_rect is not None:
+        fields, geom_type, features, version = None, "", None, ""
+        rect = self._bbox_rect or self._powiat_rects.get(teryt)
+        try:
+            fields, geom_type, features = _read_direct(
+                base_url, wfs_layer_name, rect, self._clip_geom, teryt, wfs_url,
+                self.isCanceled, self._progress(self._count))
+            version = "2.0.0 (kafle)"
+            if not features and self._bbox_rect is not None and not self.isCanceled():
+                # pusty zakres bywa skutkiem innej kolejności osi BBOX – sprawdza dostawca QGIS
                 QgsMessageLog.logMessage(
-                    f"[EziudpWfsTask] TERYT {teryt} '{wfs_layer_name}': "
-                    f"próba bez BBOX w URI (przytnę lokalnie).",
-                    LOG_TAG, Qgis.MessageLevel.Info,
-                )
-                wfs_vl, version = _try_wfs_layer(base_url, wfs_layer_name, None)
+                    f"[EziudpWfsTask] TERYT {teryt} '{wfs_layer_name}': 0 obiektów w zakresie – "
+                    f"sprawdzam dostawcą WFS QGIS.", LOG_TAG, Qgis.MessageLevel.Info)
+                features = None
+        except Exception as exc:
+            QgsMessageLog.logMessage(
+                f"[EziudpWfsTask] TERYT {teryt} '{wfs_layer_name}': własny klient nie pobrał danych "
+                f"({net.friendly(exc)}) – próbuję dostawcą WFS QGIS.", LOG_TAG, Qgis.MessageLevel.Info)
+            direct_error = net.friendly(exc)
+        else:
+            direct_error = ""
 
-            if wfs_vl is None:
-                return self._fetch_direct(report, teryt, base_url, wfs_url, wfs_layer_name,
-                                          mem_layer_name, style_name)
+        if features is None:
+            try:
+                fields, geom_type, features, version = self._read_with_provider(
+                    teryt, base_url, wfs_url, wfs_layer_name)
+            except Exception as exc:
+                report.error = direct_error or net.friendly(exc)
+                QgsMessageLog.logMessage(f"[EziudpWfsTask] TERYT {teryt} '{wfs_layer_name}': {exc}",
+                                         LOG_TAG, Qgis.MessageLevel.Warning)
+                return report
 
         report.wfs_version = version
-
-        # Snapshot: obiekty z WFS do pamięci (clip_geom, gdy wybrano gminę / zasięg / warstwę
-        # i serwer mógł nie zastosować BBOX z URI)
-        fields, geom_type, features = _read_snapshot(
-            wfs_layer=wfs_vl,
-            clip_geom=self._clip_geom,
-            teryt=teryt,
-            wfs_url=wfs_url,
-            task_check_cancelled=self.isCanceled,
-        )
         count = len(features)
-
-        # Jawne usunięcie WFS layer – zwalniamy połączenie i pamięć
-        del wfs_vl
-
-        # Jeśli snapshot jest pusty a był BBOX → ponów bez BBOX i przytnij lokalnie
-        if count == 0 and self._bbox_rect is not None and self._clip_geom is not None:
-            QgsMessageLog.logMessage(
-                f"[EziudpWfsTask] TERYT {teryt} '{wfs_layer_name}': "
-                f"BBOX w URI dał 0 wyników – ponawiam bez BBOX, przytnę lokalnie.",
-                LOG_TAG, Qgis.MessageLevel.Info,
-            )
-            wfs_vl2, version2 = _try_wfs_layer(base_url, wfs_layer_name, None)
-            if wfs_vl2 is not None:
-                fields, geom_type, features = _read_snapshot(
-                    wfs_layer=wfs_vl2,
-                    clip_geom=self._clip_geom,
-                    teryt=teryt,
-                    wfs_url=wfs_url,
-                    task_check_cancelled=self.isCanceled,
-                )
-                count = len(features)
-                del wfs_vl2
-                report.wfs_version = version2
-
         QgsMessageLog.logMessage(
-            f"[EziudpWfsTask] TERYT {teryt} '{wfs_layer_name}' "
-            f"WFS {report.wfs_version}: {count} obiektów → '{mem_layer_name}'",
-            LOG_TAG, Qgis.MessageLevel.Info,
-        )
-
+            f"[EziudpWfsTask] TERYT {teryt} '{wfs_layer_name}' WFS {version}: {count} obiektów → '{layer_name}'",
+            LOG_TAG, Qgis.MessageLevel.Info)
         if features:
-            self._pending.append({"name": mem_layer_name, "fields": fields,
+            self._pending.append({"name": layer_name, "fields": fields,
                                   "geom_type": geom_type, "style": style_name,
                                   "features": features,
                                   "info": {"url": wfs_url, "typename": wfs_layer_name,
-                                           "scope": f"TERYT {teryt} (EZiUDP)"}})
-            self._existing_names.add(mem_layer_name)
-
+                                           "scope": self.scope_text or f"TERYT {teryt} (EZiUDP)"}})
+        self._count += count
+        self.count_changed.emit(self._count)
         report.feature_count = count
         report.success = True
         return report
 
-    def _fetch_direct(self, report, teryt, base_url, wfs_url, wfs_layer_name,
-                      mem_layer_name, style_name) -> WfsLayerReport:
-        """Dostawca WFS QGIS nie przyjął usługi – pobieranie przez własny klient GML."""
-        QgsMessageLog.logMessage(
-            f"[EziudpWfsTask] TERYT {teryt} '{wfs_layer_name}': dostawca WFS QGIS odrzucił "
-            f"usługę – pobieram bezpośrednio (GetFeature + własny parser GML).",
-            LOG_TAG, Qgis.MessageLevel.Info,
-        )
-        try:
-            _, geom_type, features = _read_direct(
-                base_url, wfs_layer_name, self._bbox_rect, self._clip_geom,
-                teryt, wfs_url, self.isCanceled)
-        except Exception as exc:
-            report.error = f"{wfs_layer_name} @ {base_url}: {exc}"
-            QgsMessageLog.logMessage(f"[EziudpWfsTask] {report.error}", LOG_TAG,
-                                     Qgis.MessageLevel.Warning)
-            return report
-        report.wfs_version = "2.0.0 (GML)"
-        if features:
-            self._pending.append({"name": mem_layer_name, "fields": None,
-                                  "geom_type": geom_type, "style": style_name,
-                                  "features": features,
-                                  "info": {"url": wfs_url, "typename": wfs_layer_name,
-                                           "scope": f"TERYT {teryt} (EZiUDP)"}})
-            self._existing_names.add(mem_layer_name)
-        report.feature_count = len(features)
-        report.success = True
-        return report
+    def _read_with_provider(self, teryt, base_url, wfs_url, wfs_layer_name) -> tuple:
+        """Dostawca WFS QGIS (WFS 2.0, potem 1.1; z BBOX, potem bez i z przycięciem u nas)."""
+        wfs_vl, version = _try_wfs_layer(base_url, wfs_layer_name, self._bbox_rect)
+        if wfs_vl is None and self._bbox_rect is not None:
+            # niektóre serwery odrzucają BBOX w adresie – wtedy cała warstwa i przycięcie lokalne
+            wfs_vl, version = _try_wfs_layer(base_url, wfs_layer_name, None)
+        if wfs_vl is None:
+            raise RuntimeError("usługa nie odpowiada jak WFS 2.0 ani 1.1")
+        fields, geom_type, features = _read_snapshot(wfs_vl, self._clip_geom, teryt, wfs_url,
+                                                     self.isCanceled)
+        del wfs_vl   # zwalnia połączenie i pamięć
+        if not features and self._bbox_rect is not None and self._clip_geom is not None \
+                and not self.isCanceled():
+            QgsMessageLog.logMessage(
+                f"[EziudpWfsTask] TERYT {teryt} '{wfs_layer_name}': BBOX dał 0 wyników – "
+                f"ponawiam bez BBOX, przytnę lokalnie.", LOG_TAG, Qgis.MessageLevel.Info)
+            wfs_vl2, version2 = _try_wfs_layer(base_url, wfs_layer_name, None)
+            if wfs_vl2 is not None:
+                fields, geom_type, features = _read_snapshot(wfs_vl2, self._clip_geom, teryt, wfs_url,
+                                                             self.isCanceled)
+                del wfs_vl2
+                version = version2
+        return fields, geom_type, features, version
 
     # ------------------------------------------------------------------
     # Helpers

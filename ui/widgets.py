@@ -22,6 +22,7 @@ from qgis.PyQt.QtWidgets import (
 from . import tr
 from ..core import catalog, layers, tasks, uldk
 from ..core.catalog import EGIB_DZIALKI_ATTRIBUTES
+from ..eziudp_wfs_task import AVAILABLE_LAYERS, AVAILABLE_LAYERS_BY_KEY
 from ..qt_compat import LAYER_FILTER_POLYGON
 from ..skorowidz_services import SKOROWIDZ_BY_LABEL, SKOROWIDZ_SERVICES
 from ..teryt_scope_widget import TerytScopeWidget
@@ -29,7 +30,6 @@ from .admin_units import normalize_teryt
 
 SETTINGS = layers.SETTINGS_PREFIX
 ROLE = Qt.ItemDataRole.UserRole
-EZIUDP = "Usługi powiatowe (EZiUDP)"
 
 _KIND_NAMES = {
     "dzialki": "Działki", "budynki": "Budynki", "lokale": "Lokale",
@@ -190,7 +190,7 @@ class Selection:
     sources: list = field(default_factory=list)       # catalog.Source
     skorowidz: Optional[object] = None                # SkorowidzService
     years: list = field(default_factory=list)         # roczniki skorowidza
-    eziudp: bool = False
+    eziudp: list = field(default_factory=list)        # klucze warstw usług powiatowych
 
     @property
     def empty(self) -> bool:
@@ -198,14 +198,16 @@ class Selection:
 
     def names(self) -> str:
         if self.eziudp:
-            return EZIUDP
+            return tr("usługi powiatowe: ") + ", ".join(
+                AVAILABLE_LAYERS_BY_KEY[k]["label"] for k in self.eziudp)
         if self.skorowidz is not None:
             return f"skorowidz: {self.skorowidz.label}"
         return ", ".join(SourcePicker.display_name(s) for s in self.sources)
 
 
 class SourcePicker(QWidget):
-    """Lista źródeł w grupach. Warstwy WFS można łączyć; skorowidz i EZiUDP są wyłączne."""
+    """Lista źródeł w grupach. Łączyć można warstwy tego samego rodzaju: usług zbiorczych
+    albo usług powiatowych (EZiUDP); skorowidz jest zawsze jeden."""
     changed = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -313,9 +315,13 @@ class SourcePicker(QWidget):
             self._leaf(g, svc.label, ("skorowidz", svc.label),
                        tr("Wyszukuje arkusze w zakresie; wybierasz je na mapie albo w tabeli i pobierasz"))
 
-        g = self._group(tr("Zaawansowane"))
-        self._leaf(g, tr("Usługi powiatowe (EZiUDP)"), ("eziudp", ""),
-                   tr("Osnowa, EGiB, RCN, BDOT500 z powiatowych usług WFS"))
+        g = self._group(tr("Usługi powiatowe (EZiUDP)"))
+        g.setToolTip(0, tr("Dane wprost z usług WFS powiatów zgłoszonych do EZiUDP: osnowa, EGiB "
+                           "z punktami granicznymi, użytkami i konturami, RCN, BDOT500"))
+        for entry in AVAILABLE_LAYERS:
+            self._leaf(g, tr(entry["label"]), ("eziudp", entry["key"]),
+                       tr("Z usługi powiatu; nie każdy powiat udostępnia tę warstwę")
+                       if entry.get("optional") else tr("Z usługi WFS powiatu (EZiUDP)"))
 
     # ------------------------------------------------------------------ zachowanie
 
@@ -329,8 +335,8 @@ class SourcePicker(QWidget):
             if other is item or other.checkState(0) != Qt.CheckState.Checked:
                 continue
             okind = other.data(0, ROLE)[0]
-            # Warstwy WFS można łączyć ze sobą; skorowidz i EZiUDP wykluczają resztę
-            if kind != "wfs" or okind != "wfs":
+            # Łączyć można warstwy tego samego rodzaju (zbiorcze albo powiatowe); skorowidz jest jeden
+            if kind != okind or kind == "skorowidz":
                 other.setCheckState(0, Qt.CheckState.Unchecked)
         self._updating = False
         self._refresh()
@@ -387,17 +393,23 @@ class SourcePicker(QWidget):
             elif kind == "skorowidz":
                 sel.skorowidz = SKOROWIDZ_BY_LABEL.get(key)
             else:
-                sel.eziudp = True
+                sel.eziudp.append(key)
         if with_years and sel.skorowidz is not None and sel.skorowidz.year_range is not None:
             a, b = int(self.year_from.currentText()), int(self.year_to.currentText())
             sel.years = [str(y) for y in range(max(a, b), min(a, b) - 1, -1)]
         return sel
 
+    @staticmethod
+    def _key(item) -> str:
+        """Klucz zapisu wyboru; warstwy powiatowe z przedrostkiem (te same nazwy co zbiorcze)."""
+        kind, key = item.data(0, ROLE)
+        return f"eziudp:{key}" if kind == "eziudp" else key
+
     def select_labels(self, labels: list) -> None:
         """Zaznacza źródła o podanych etykietach z katalogu / skorowidzów (reszta odznaczona)."""
         self._updating = True
         for item in self._items:
-            key = item.data(0, ROLE)[1] or EZIUDP
+            key = self._key(item)
             on = key in labels
             item.setCheckState(0, Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
             if on:
@@ -413,7 +425,7 @@ class SourcePicker(QWidget):
             p = p.parent()
 
     def _save(self) -> None:
-        keys = [item.data(0, ROLE)[1] or EZIUDP for item in self._items
+        keys = [self._key(item) for item in self._items
                 if item.checkState(0) == Qt.CheckState.Checked]
         QgsSettings().setValue(f"{SETTINGS}/sources", keys)
 
@@ -423,7 +435,7 @@ class SourcePicker(QWidget):
             keys = [keys]
         self._updating = True
         for item in self._items:
-            key = item.data(0, ROLE)[1] or EZIUDP
+            key = self._key(item)
             if key in (keys or []):
                 item.setCheckState(0, Qt.CheckState.Checked)
                 self._reveal(item)

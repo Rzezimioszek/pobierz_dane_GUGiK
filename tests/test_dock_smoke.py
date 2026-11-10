@@ -181,10 +181,69 @@ def test_obreb_requires_parcels_and_finds_unit(dock):
     assert _layer("Dzialki") is not None
 
 
-def test_eziudp_replaces_steps(dock):
-    dock.sources.select_labels(["Usługi powiatowe (EZiUDP)"])
-    assert not dock.eziudp.isHidden() and dock.scope_box.isHidden() and dock.btn_download.isHidden()
-    assert dock.eziudp._dock() is dock
+@pytest.fixture
+def county(monkeypatch):
+    """Udawana usługa powiatowa: EZiUDP wskazuje lokalny serwer z warstwą ms:dzialki."""
+    ez = importlib.import_module(f"{PLUGIN_NAME}.eziudp_client")
+    srv = FakeWfs(total=2500, spatial=True, unstable=True)
+    state = {"srv": srv, "asked": [], "fail": set()}
+
+    def urls(self, teryt, zbior):
+        state["asked"].append((teryt, zbior))
+        if teryt in state["fail"]:
+            return ez.EziudpResult(success=False, teryt=teryt, zbior=zbior, error_message="brak usługi")
+        return ez.EziudpResult(success=True, teryt=teryt, zbior=zbior,
+                               records=[ez.EziudpRecord(url_wfs=srv.url + "?map=x")])
+    monkeypatch.setattr(ez.EziudpClient, "get_wfs_urls", urls)
+    monkeypatch.setattr(ez.EziudpClient, "get_layer_names", lambda self, url, zbior: ["ms:dzialki"])
+    yield state
+    srv.close()
+
+
+def test_eziudp_uses_steps_and_task_list(dock, county):
+    """Usługi powiatowe: zakres z kroku 2, zapis z kroku 3, wiersz na liście zadań, kafle."""
+    from qgis.core import QgsRectangle
+    ui_ez = importlib.import_module(f"{PLUGIN_NAME}.ui.eziudp")
+    dock.sources.select_labels(["eziudp:egib_dzi"])
+    assert not dock.scope_box.isHidden() and not dock.btn_download.isHidden()
+    assert dock.sources.selection().eziudp == ["egib_dzi"] and not dock.sources.selection().sources
+    dock.scope.tabs.setCurrentIndex(ScopeTab.IDS)
+    dock.scope.txt_ids.setPlainText("146501_1.0001.1")
+    assert not dock.btn_download.isEnabled() and "powiatowych" in dock.hint.text()
+
+    dock.scope.tabs.setCurrentIndex(ScopeTab.MAP)
+    dock._start_draw("rect")
+    rect = QgsRectangle(284000, 366000, 284390, 367990)     # 20 × 100 działek = 2000
+    dock._on_rect(rect)
+    from qgis.core import QgsGeometry
+    teryts = ui_ez.powiaty_for(QgsGeometry.fromRect(rect))
+    assert len(teryts) == 1
+    dock.output.ed_prefix.setText("Proj")
+    assert dock.btn_download.isEnabled()
+    dock.start()
+    _wait(dock)
+    vl = _layer(f"Proj_Dzialki_{teryts[0]}")
+    assert vl is not None and vl.featureCount() == 2000, "kafle nie mogą zgubić obiektów"
+    reqs = county["srv"].requests
+    assert all("bbox" in r and r["map"] == "x" for r in reqs)
+    assert max(int(r["startIndex"]) for r in reqs) == 0, "kafle zamiast stronicowania"
+    row = _rows(dock)[0]
+    assert "2 000" in row.result.text() and not row.btn_show.isHidden()
+
+
+def test_eziudp_failed_county_offers_retry(dock, county):
+    ui_ez = importlib.import_module(f"{PLUGIN_NAME}.ui.eziudp")
+    county["fail"].add("0226")
+    out = dock.output.output()
+    ui_ez.launch(dock, ["egib_dzi"], ["0226"], None, None, out, "powiat")
+    _wait(dock)
+    row = _rows(dock)[0]
+    assert "brak usługi" in row.result.text() and not row.btn_retry.isHidden()
+    county["fail"].clear()
+    county["srv"].total = 30
+    row.btn_retry.click()
+    _wait(dock)
+    assert _layer("Dzialki_0226").featureCount() == 30
 
 
 def test_skorowidz_excludes_wfs_and_shows_years(dock):
@@ -306,7 +365,7 @@ def test_eziudp_gmina_boundary_in_background(dock, monkeypatch):
     import threading
     from qgis.core import QgsGeometry
     prg = importlib.import_module(f"{PLUGIN_NAME}.prg_client")
-    ez = importlib.import_module(f"{PLUGIN_NAME}.eziudp_download_dialog")
+    ez = importlib.import_module(f"{PLUGIN_NAME}.ui.eziudp")
     threads = []
 
     def boundary(self, teryt):
@@ -314,15 +373,13 @@ def test_eziudp_gmina_boundary_in_background(dock, monkeypatch):
         return QgsGeometry.fromWkt("POLYGON((0 0, 10 0, 10 10, 0 10, 0 0))")
     monkeypatch.setattr(prg.PRGClient, "get_boundary_geometry", boundary)
     launched = []
-    monkeypatch.setattr(ez.EziudpWidget, "_launch",
-                        lambda self, keys, teryts, bbox, clip: launched.append((keys, teryts, bbox, clip)))
+    monkeypatch.setattr(ez, "launch", lambda dock, keys, teryts, rect, clip, out, label, row=None, pairs=None:
+                        (launched.append((keys, teryts, rect, clip)), row.finish("ok")))
 
-    dock.sources.select_labels(["Usługi powiatowe (EZiUDP)"])
-    w = dock.eziudp
-    w.radio_teryt.setChecked(True)
-    w.teryt_scope.set_teryt("146501_1")
-    next(iter(w._layer_checks.values())).setChecked(True)
-    w._on_start()
+    dock.sources.select_labels(["eziudp:egib_dzi"])
+    dock.scope.tabs.setCurrentIndex(ScopeTab.UNIT)
+    dock.scope.teryt.set_teryt("146501_1")
+    dock.start()
     assert not launched, "start powinien czekać na granicę"
     from qgis.core import QgsApplication
     t0 = time.time()
@@ -331,7 +388,7 @@ def test_eziudp_gmina_boundary_in_background(dock, monkeypatch):
         time.sleep(0.02)
     assert threads == [False], "granica musi iść poza wątkiem interfejsu"
     keys, teryts, bbox, clip = launched[0]
-    assert teryts == ["1465"] and bbox and clip.startswith("Polygon")
+    assert teryts == ["1465"] and not bbox.isEmpty() and clip.asWkt().startswith("Polygon")
 
 
 def test_enter_starts_only_when_ready(dock, monkeypatch):

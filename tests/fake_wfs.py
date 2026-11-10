@@ -92,6 +92,10 @@ class FakeWfs:
                     x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
                     pool = [i for i in pool if _x(i) <= x1 and _x(i) + 10 >= x0
                             and _y(i) <= y1 and _y(i) + 10 >= y0]
+                if outer.spatial and q.get("bbox"):
+                    y0, x0, y1, x1 = [float(v) for v in q["bbox"].split(",")[:4]]   # URN: N E
+                    pool = [i for i in pool if _x(i) <= x1 and _x(i) + 10 >= x0
+                            and _y(i) <= y1 and _y(i) + 10 >= y0]
                 if outer.unstable:
                     random.shuffle(pool)
                 ids = pool[start:start + count]
