@@ -8,7 +8,7 @@ qgisMinimumVersion=3.40
 qgisMaximumVersion=4.99
 supportsQt6=True
 description=Pobieranie danych z usług GUGiK: EGiB, RCN, PRG, PRNG, pliki ze skorowidzów (ortofotomapa, LIDAR, NMT/NMPT) i powiatowe WFS z EZiUDP. Download data from Polish GUGiK services (cadastre, real estate prices, boundaries, place names, sheet indexes).
-version=1.9.11
+version=1.9.12
 author=Główny Urząd Geodezji i Kartografii (GUGiK) - Łukasz Świątek
 email=uslugi.iip@gugik.gov.pl
 
@@ -27,6 +27,14 @@ repository=https://github.com/GlownyUrzadGeodezjiIKartografii/pobierz_dane_GUGiK
 hasProcessingProvider=yes
 # Uncomment the following line and add your changelog:
 changelog=
+	1.9.12
+		- duże pobrania: gdy w zakresie jest ponad 100 tys. obiektów, wtyczka zatrzymuje się po pierwszej stronie i pyta („Pobierz mimo to”) zamiast pobierać np. całą Polskę z widoku mapy
+		- pasek postępu pokazuje prawdziwy procent także przy jednym zapytaniu (z liczby obiektów podanej przez serwer)
+		- zapis wyników ok. 10 razy szybszy – krótsze zamrożenie QGIS przy dużych warstwach
+		- wiersz zadania: przycisk „Pokaż” przybliża mapę do pobranych danych
+		- krok 2: powierzchnia narysowanego zakresu (m², ha, km²); zakładka „Warstwa” pokazuje liczbę obiektów = zapytań
+		- poprawka (QGIS 4): pierwsza warstwa poligonowa dodana do projektu od razu odblokowuje zakres „Warstwa”
+		- drobne: nieaktualna podpowiedź przy skorowidzach, niezamykana sesja PRG w panelu
 	1.9.11
 		- poprawka: błąd zgłoszony przez serwer jako ExceptionReport z kodem 200 (MapServer) nie jest już traktowany jak „brak obiektów” – zapytanie trafia do błędów z „Ponów”
 		- poprawka: usługi oddające mniej niż 1000 obiektów na stronę są pobierane do końca (stronicowanie według numberMatched)

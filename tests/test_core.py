@@ -341,3 +341,37 @@ def test_proxy_from_qgis_network_manager(monkeypatch):
         assert net._qgis_proxies() == {}
     finally:
         nam.setFallbackProxyAndExcludes(old, [], [])
+
+
+def test_size_limit_stops_after_first_page_and_progress_uses_number_matched(server):
+    tasks, filters = mod("tasks"), mod("filters")
+    flt = [filters.bbox("geom", 0, 0, 1, 1)]
+    task = tasks.WfsDownloadTask(_source(server.url), flt, size_limit=1000)
+    assert task.run() is True
+    assert task.result.too_large == 1005 and task.result.features == []
+    assert len(server.requests) == 1                       # tylko pierwsza strona
+    server.requests.clear()
+    task = tasks.WfsDownloadTask(_source(server.url), flt)   # bez limitu – wszystko
+    seen = []
+    task.progressChanged.connect(seen.append)
+    task.run()
+    assert len(task.result.features) == 1005 and task.result.too_large == 0
+    assert 99 <= seen[0] < 100 and seen[-1] == 100         # 1000/1005 po pierwszej stronie
+
+
+def test_write_100k_features_is_fast_enough():
+    """Zapis dzieje się w głównym wątku – nie może zamrażać QGIS na długie sekundy."""
+    import time
+    from qgis.core import QgsProject
+    layers = mod("layers")
+    base = _features(100)
+    feats = []
+    for k in range(200):
+        for f in base:
+            attrs = dict(f["attrs"], ID_DZIALKI=f"{k}_{f['attrs']['ID_DZIALKI']}",
+                         **{f"pole{j}": "x" for j in range(8)})
+            feats.append({"geom": f["geom"], "attrs": attrs})
+    project = QgsProject()
+    start = time.time()
+    vl = layers.write(feats, "Duza", "MultiPolygon", "ID_DZIALKI", project=project, load_style=False)
+    assert vl.featureCount() == 20000 and time.time() - start < 3.0

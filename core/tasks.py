@@ -40,6 +40,15 @@ class DownloadResult:
     errors: list = field(default_factory=list)   # [(etykieta zapytania, komunikat)]
     failed: list = field(default_factory=list)   # zapytania (Query) do ponowienia
     canceled: bool = False
+    too_large: int = 0      # > 0: wstrzymano – tyle obiektów zgłosił serwer (ponad size_limit)
+
+
+class TooLarge(Exception):
+    """Serwer zgłosił więcej obiektów niż limit zadania."""
+
+    def __init__(self, matched: int):
+        super().__init__(f"{matched} obiektów")
+        self.matched = matched
 
 
 class WfsDownloadTask(QgsTask):
@@ -48,17 +57,22 @@ class WfsDownloadTask(QgsTask):
     Błąd jednego zapytania nie przerywa pozostałych; trafia do `result.errors`.
     Sygnał `done(DownloadResult)` przychodzi w głównym wątku;
     `count_changed(int)` – liczba pobranych obiektów w trakcie.
+
+    `size_limit` – gdy serwer zgłosi w zapytaniu więcej obiektów (numberMatched),
+    zadanie staje od razu po pierwszej stronie z `result.too_large`; pytanie
+    „pobrać mimo to?” zadaje interfejs i uruchamia zadanie ponownie bez limitu.
     """
     done = pyqtSignal(object)
     count_changed = pyqtSignal(int)
 
     def __init__(self, source: Source, queries: list, attributes: Optional[list] = None,
-                 expected: int = 0, description: str = ""):
+                 expected: int = 0, description: str = "", size_limit: int = 0):
         super().__init__(description or f"Pobieranie: {source.label}", QgsTask.Flag.CanCancel)
         self.source = source
         self.queries = [q if isinstance(q, Query) else Query(q) for q in queries]
         self.attributes = attributes if source.attribute_selection else None
         self.expected = expected
+        self.size_limit = size_limit
         self.result = DownloadResult()
         self.client = WfsClient(source.url, source.typename, source.geom_field)
 
@@ -70,6 +84,10 @@ class WfsDownloadTask(QgsTask):
                 return False
             try:
                 self.result.features.extend(self._run_query(query, qi, n))
+            except TooLarge as big:
+                self.result.too_large = big.matched
+                self.result.features = []
+                return True
             except Exception as exc:  # sieć, serwer, XML – zapisz i jedź dalej
                 label = query.label or f"zapytanie {qi + 1}/{n}"
                 log.warning(f"[Pobieranie] {self.source.label}, {label}: {exc}")
@@ -86,12 +104,14 @@ class WfsDownloadTask(QgsTask):
                 break
             text = self.client.page(query.filter_xml, start, PAGE_SIZE, self.attributes)
             page = gml.parse_features(text)
+            matched = gml.number_matched(text)
+            if start == 0 and self.size_limit and matched > self.size_limit:
+                raise TooLarge(matched)
             features.extend(page)
             got = start + len(page)
-            self._report(qi, n, got)
+            self._report(qi, n, got, matched)
             if not page:
                 break
-            matched = gml.number_matched(text)
             if matched >= 0:
                 # serwer może oddawać mniej niż PAGE_SIZE na stronę – liczy się numberMatched
                 if got >= matched:
@@ -103,12 +123,12 @@ class WfsDownloadTask(QgsTask):
             start += PAGE_SIZE
         return layers.clip(features, query.clip_geom)
 
-    def _report(self, qi: int, n: int, done_in_query: int) -> None:
+    def _report(self, qi: int, n: int, done_in_query: int, matched: int = -1) -> None:
         self.count_changed.emit(len(self.result.features) + done_in_query)
-        if n > 1:
-            self.setProgress(100.0 * (qi + 1) / n)
-        elif self.expected > 0:
-            self.setProgress(min(99.0, 100.0 * done_in_query / self.expected))
+        total = matched if matched > 0 else self.expected
+        # ułamek bieżącego zapytania (z liczby zgłoszonej przez serwer) + zapytania już zakończone
+        part = min(1.0, done_in_query / total) if total > 0 else (1.0 if n > 1 else 0.0)
+        self.setProgress(min(99.0, 100.0 * (qi + part) / n))
 
     def finished(self, ok: bool) -> None:
         _close(self.client.session)

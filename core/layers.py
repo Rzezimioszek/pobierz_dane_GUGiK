@@ -156,19 +156,32 @@ def _schema(features: list, numeric: Optional[dict]) -> QgsFields:
     return fields
 
 
-def _value_for(field: QgsField, value, bad: dict):
-    if value is None:
+def _field_plan(layer_fields: QgsFields, pk: set) -> list:
+    """
+    [(nazwa pola, rodzaj)] raz na zapis: rodzaj to 'pk' | 'int' | 'double' | 'str' | 'raw'.
+    Typ pola czytany jest raz, a nie dla każdej wartości (przy 100 tys. obiektów
+    to różnica kilku sekund zamrożenia QGIS).
+    """
+    plan = []
+    for i in range(layer_fields.count()):
+        field = layer_fields.at(i)
+        t = field.type()
+        kind = ("pk" if i in pk else "double" if t == FIELD_DOUBLE
+                else "int" if t in FIELD_INTEGER_TYPES else "str" if t == FIELD_STRING else "raw")
+        plan.append((field.name(), kind))
+    return plan
+
+
+def _convert(value, kind: str, name: str, bad: dict):
+    if value is None or kind == "raw":
+        return value
+    if kind == "str":
+        return value if isinstance(value, str) else str(value)
+    try:
+        return _to_number(value, kind)
+    except (ValueError, TypeError):
+        bad[name] = bad.get(name, 0) + 1
         return None
-    t = field.type()
-    if t in FIELD_INTEGER_TYPES or t == FIELD_DOUBLE:
-        try:
-            return _to_number(value, "double" if t == FIELD_DOUBLE else "int")
-        except (ValueError, TypeError):
-            bad[field.name()] = bad.get(field.name(), 0) + 1
-            return None
-    if t == FIELD_STRING and not isinstance(value, str):
-        return str(value)
-    return value
 
 
 # ---------------------------------------------------------------- warstwa docelowa
@@ -306,6 +319,7 @@ def make_features(features: list, layer_fields: QgsFields, is_multi: bool,
     pk = pk or set()      # np. fid w GPKG – nadaje dostawca
     bad: dict = {}
     out = []
+    plan = _field_plan(layer_fields, pk)
     for fd in features:
         key = fd["attrs"].get(unique_field) if unique_field else None
         if key not in (None, "") and key in seen:
@@ -320,9 +334,9 @@ def make_features(features: list, layer_fields: QgsFields, is_multi: bool,
             g.convertToSingleType()  # warstwa jednoczęściowa, np. z wersji 1.x
         feat = QgsFeature(layer_fields)
         feat.setGeometry(g)
-        feat.setAttributes([
-            None if i in pk else _value_for(layer_fields.at(i), fd["attrs"].get(layer_fields.at(i).name()), bad)
-            for i in range(layer_fields.count())])
+        attrs = fd["attrs"]
+        feat.setAttributes([None if kind == "pk" else _convert(attrs.get(name), kind, name, bad)
+                            for name, kind in plan])
         out.append(feat)
         if key not in (None, ""):
             seen.add(key)

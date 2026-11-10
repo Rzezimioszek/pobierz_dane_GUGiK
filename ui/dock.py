@@ -26,11 +26,12 @@ from .widgets import (
 )
 from ..core import catalog, filters, layers, log, net, tasks
 from ..core import scope as scope_mod
-from ..prg_client import PRGClient
 from ..qt_compat import GEOM_POLYGON
 from .sheets import SheetsDialog, already_downloaded, format_size
 
 EPSG2180 = "EPSG:2180"
+# Powyżej tylu obiektów w jednym zapytaniu wtyczka pyta, zanim zacznie pobierać
+LARGE_DOWNLOAD = 100_000
 STYLE_SHEET = os.path.join(os.path.dirname(os.path.abspath(__file__)), "style.qss")
 
 
@@ -64,7 +65,6 @@ class PD_GUGiKDock(QDockWidget):
         self.powiaty = self.units.powiaty
         self.gminy = self.units.gminy
         self.name_to_teryt = self.units.name_to_teryt
-        self.prg_client = PRGClient()
 
         self.running_tasks = []
         self._tag = ""                # fragment nazwy warstwy dla „osobnej warstwy”
@@ -154,6 +154,7 @@ class PD_GUGiKDock(QDockWidget):
             self.start()
 
     def _on_selection_changed(self, *_):
+        self.scope.refresh_layer_hint()
         self._validate()
 
     def closeEvent(self, event):
@@ -322,11 +323,12 @@ class PD_GUGiKDock(QDockWidget):
 
     def _on_rect(self, rect) -> None:
         self._stop_draw()
-        self.scope.set_drawn_rect(rect)      # → _validate → podświetlenie
+        area = self._to_2180(QgsGeometry.fromRect(rect)).area()
+        self.scope.set_drawn_rect(rect, area)      # → _validate → podświetlenie
 
     def _on_polygon(self, geom) -> None:
         self._stop_draw()
-        self.scope.set_drawn_polygon(geom)
+        self.scope.set_drawn_polygon(geom, self._to_2180(geom).area())
 
     def _on_draw_cancel(self) -> None:
         self._stop_draw()
@@ -540,11 +542,13 @@ class PD_GUGiKDock(QDockWidget):
 
     # ------------------------------------------------------------------ pobieranie WFS
 
-    def _download(self, source, queries, out, scope_text, row=None, tag=None) -> None:
+    def _download(self, source, queries, out, scope_text, row=None, tag=None,
+                  allow_large=False) -> None:
         if not queries:
             return
         tag = self._tag if tag is None else tag
-        task = tasks.WfsDownloadTask(source, queries, self.output.selected_attributes())
+        task = tasks.WfsDownloadTask(source, queries, self.output.selected_attributes(),
+                                     size_limit=0 if allow_large else LARGE_DOWNLOAD)
         title = f"{SourcePicker.display_name(source)} · {scope_text}"
         if row is None:
             row = self.tasks.add(title, task)
@@ -553,6 +557,18 @@ class PD_GUGiKDock(QDockWidget):
         task.count_changed.connect(row.set_count)
 
         def done(result):
+            if result.too_large:
+                count = f"{result.too_large:,}".replace(",", " ")
+                text = (tr("W tym zakresie jest ") + count
+                        + tr(" obiektów – pobieranie potrwa długo i zajmie dużo pamięci."))
+                if source.opendata:
+                    text += tr(" Dla całego powiatu lub województwa szybsza jest paczka opendata "
+                               "(zakładka „Jednostka”).")
+                row.finish(text, ok=False)
+                row.offer_retry(lambda: self._download(source, queries, out, scope_text, tag=tag,
+                                                       allow_large=True),
+                                tr("Pobierz mimo to"), tr("Pobierz wszystkie obiekty z tego zakresu"))
+                return
             n = len(result.features)
             written = []
             if n:
@@ -582,8 +598,32 @@ class PD_GUGiKDock(QDockWidget):
             if result.failed and not result.canceled:
                 failed = list(result.failed)
                 row.offer_retry(lambda: self._download(
-                    source, failed, out, scope_text + tr(" (ponowienie)"), tag=tag))
+                    source, failed, out, scope_text + tr(" (ponowienie)"), tag=tag,
+                    allow_large=allow_large))
+            if written:
+                row.offer_show(lambda: self._zoom_to_layers(written))
         self._run(task, done)
+
+    def _zoom_to_layers(self, written) -> None:
+        """Przybliża mapę do warstw wyniku (pomija warstwy usunięte w międzyczasie)."""
+        rect = None
+        for lyr in written:
+            try:
+                if QgsProject.instance().mapLayer(lyr.id()) is None or lyr.featureCount() == 0:
+                    continue
+                r = self.canvas.mapSettings().layerExtentToOutputExtent(lyr, lyr.extent())
+            except RuntimeError:     # warstwa usunięta z projektu
+                continue
+            if rect is None:
+                rect = r
+            else:
+                rect.combineExtentWith(r)
+        if rect is None:
+            self.notify(tr("Tej warstwy nie ma już w projekcie."), Qgis.MessageLevel.Warning)
+            return
+        rect.scale(1.1)
+        self.canvas.setExtent(rect)
+        self.canvas.refresh()
 
     # ================================================================== skorowidze
 

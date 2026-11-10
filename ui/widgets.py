@@ -169,6 +169,15 @@ class StepCard(QFrame):
         self.summary.setText(text)
 
 
+def format_area(m2: float) -> str:
+    """Powierzchnia zakresu: m², ha albo km² – zależnie od wielkości."""
+    if m2 < 10_000:
+        return f"{m2:.0f} m²"
+    if m2 < 1_000_000:
+        return f"{m2 / 10_000:.1f} ha".replace(".", ",")
+    return f"{m2 / 1_000_000:.2f} km²".replace(".", ",")
+
+
 def step_box(number: int, title: str, key: str = "") -> tuple:
     card = StepCard(number, title, key=key)
     return card, card.body
@@ -302,7 +311,7 @@ class SourcePicker(QWidget):
         g = self._group(tr("Skorowidze: ortofotomapy, NMT, LIDAR"))
         for svc in SKOROWIDZ_SERVICES:
             self._leaf(g, svc.label, ("skorowidz", svc.label),
-                       tr("Wyszukuje arkusze i pozwala je pobrać albo wczytać strumieniowo"))
+                       tr("Wyszukuje arkusze w zakresie; wybierasz je na mapie albo w tabeli i pobierasz"))
 
         g = self._group(tr("Zaawansowane"))
         self._leaf(g, tr("Usługi powiatowe (EZiUDP)"), ("eziudp", ""),
@@ -632,19 +641,19 @@ class ScopePicker(QWidget):
             self.map_hint.setText(tr("Przeciągnij myszą na mapie, aby zaznaczyć prostokąt."))
         self.draw_requested.emit(self.map_mode())
 
-    def set_drawn_rect(self, rect) -> None:
+    def set_drawn_rect(self, rect, area_m2: float = 0.0) -> None:
         self.drawn_rect = rect
         self.rb_rect.setChecked(True)
-        self.map_hint.setText(tr("Zaznaczono prostokąt ") +
-                              f"{rect.width():.0f} × {rect.height():.0f} " + tr("(jednostki mapy)."))
+        self.map_hint.setText(tr("Zaznaczono prostokąt") + (f": {format_area(area_m2)}." if area_m2 else "."))
         self.btn_clear_drawn.setEnabled(True)
         self.changed.emit()
 
-    def set_drawn_polygon(self, geom) -> None:
+    def set_drawn_polygon(self, geom, area_m2: float = 0.0) -> None:
         self.drawn_polygon = geom
         self.rb_polygon.setChecked(True)
         n = max(0, geom.constGet().nCoordinates() - 1)
-        self.map_hint.setText(tr("Narysowano wielokąt, wierzchołków: ") + str(n))
+        self.map_hint.setText(tr("Narysowano wielokąt, wierzchołków: ") + str(n)
+                              + (f" · {format_area(area_m2)}" if area_m2 else ""))
         self.btn_clear_drawn.setEnabled(True)
         self.changed.emit()
 
@@ -668,16 +677,38 @@ class ScopePicker(QWidget):
         lay.addWidget(QLabel(tr("Warstwa poligonowa:")))
         self.cmb_layer = QgsMapLayerComboBox()
         self.cmb_layer.setFilters(LAYER_FILTER_POLYGON)
-        self.cmb_layer.layerChanged.connect(self._emit_changed)
+        self.cmb_layer.layerChanged.connect(self._layer_changed)
+        # W QGIS 4 pierwsza warstwa dodana do projektu wybiera się na liście bez
+        # sygnału layerChanged – pilnujemy też samej listy.
+        model = self.cmb_layer.model()
+        for sig in (model.rowsInserted, model.rowsRemoved, model.modelReset):
+            sig.connect(self._layer_changed)
         lay.addWidget(self.cmb_layer)
         self.chk_selected = QCheckBox(tr("Tylko zaznaczone obiekty"))
-        self.chk_selected.toggled.connect(self._emit_changed)
+        self.chk_selected.toggled.connect(self._layer_changed)
         lay.addWidget(self.chk_selected)
-        lay.addWidget(hint_label())
-        lay.itemAt(lay.count() - 1).widget().setText(
-            tr("Zapytanie idzie osobno dla każdego obiektu warstwy."))
+        self.layer_hint = hint_label()
+        lay.addWidget(self.layer_hint)
+        self._layer_changed()
         lay.addStretch(1)
         return w
+
+    def refresh_layer_hint(self) -> None:
+        """Ile obiektów (= zapytań) da wybrana warstwa; wołane też po zmianie zaznaczenia."""
+        layer = self.cmb_layer.currentLayer()
+        if layer is None:
+            self.layer_hint.setText(tr("Zapytanie idzie osobno dla każdego obiektu warstwy."))
+            return
+        n = layer.selectedFeatureCount() if self.chk_selected.isChecked() else layer.featureCount()
+        text = tr("Obiektów: ") + str(n) + tr(" – każdy to osobne zapytanie.")
+        if n > 100:
+            text += tr(" To dużo: rozważ połączenie obiektów albo zakres „Jednostka”.")
+        self.layer_hint.setText(text)
+        set_state(self.layer_hint, "warn" if n > 100 else "")
+
+    def _layer_changed(self, *_) -> None:
+        self.refresh_layer_hint()
+        self.changed.emit()
 
     def _tab_ids(self) -> QWidget:
         w = QWidget()
@@ -965,8 +996,16 @@ class TaskRow(QFrame):
         self.btn_retry.setVisible(False)
         self.btn_retry.clicked.connect(self._retry)
         bottom.addWidget(self.btn_retry, 0, Qt.AlignmentFlag.AlignTop)
+        self.btn_show = QToolButton()
+        self.btn_show.setObjectName("link")
+        self.btn_show.setText(tr("Pokaż"))
+        self.btn_show.setToolTip(tr("Przybliż mapę do pobranych danych"))
+        self.btn_show.setVisible(False)
+        self.btn_show.clicked.connect(self._show)
+        bottom.addWidget(self.btn_show, 0, Qt.AlignmentFlag.AlignTop)
         lay.addLayout(bottom)
         self._on_retry = None
+        self._on_show = None
         self.running = True
         if task is not None:
             task.progressChanged.connect(lambda p: self.bar.setValue(int(p)))
@@ -984,10 +1023,21 @@ class TaskRow(QFrame):
             self.count.setText(tr("pobrano obiektów: ") + f"{n:,}".replace(",", " "))
             self.count.setVisible(True)
 
-    def offer_retry(self, callback) -> None:
-        """Pokazuje „Ponów” po zakończeniu z błędami; `callback()` uruchamia ponowienie."""
+    def offer_retry(self, callback, text: str = "", tooltip: str = "") -> None:
+        """Pokazuje „Ponów” (albo `text`) po zakończeniu; `callback()` uruchamia ponowienie."""
         self._on_retry = callback
+        self.btn_retry.setText(text or tr("Ponów"))
+        self.btn_retry.setToolTip(tooltip or tr("Ponów tylko zapytania zakończone błędem"))
         self.btn_retry.setVisible(True)
+
+    def offer_show(self, callback) -> None:
+        """Pokazuje „Pokaż” – `callback()` przybliża mapę do wyniku."""
+        self._on_show = callback
+        self.btn_show.setVisible(True)
+
+    def _show(self) -> None:
+        if self._on_show is not None:
+            self._on_show()
 
     def _retry(self) -> None:
         self.btn_retry.setVisible(False)
@@ -1052,7 +1102,7 @@ class TasksPanel(QWidget):
         self.rows = QVBoxLayout()
         body.addLayout(self.rows)
         self.empty = hint_label()
-        self.empty.setText(tr("Brak zadań."))
+        self.empty.setText(tr("Tu pojawi się postęp pobierania. Szczegóły zawsze w „Dzienniku”."))
         body.addWidget(self.empty)
         lay.addWidget(self.content)
         self.set_collapsed(QgsSettings().value(_collapsed_key("tasks"), False, type=bool), save=False)

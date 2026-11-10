@@ -658,3 +658,56 @@ def test_typed_obreb_code_selects_whole_cascade(dock):
     w.txt_teryt.setText(code)
     assert w.cmb_gmina.currentData() == u.gmina_for(code.split(".")[0])
     assert w.cmb_obreb.currentData() == code
+
+
+def test_large_download_asks_before_fetching_everything(dock, monkeypatch):
+    mod = importlib.import_module(f"{PLUGIN_NAME}.ui.dock")
+    catalog = importlib.import_module(f"{PLUGIN_NAME}.core.catalog")
+    monkeypatch.setattr(mod, "LARGE_DOWNLOAD", 2)
+    srv = FakeWfs(total=5)
+    try:
+        monkeypatch.setitem(catalog.SOURCES_BY_LABEL, "dzialki (EGIB)", dataclasses.replace(
+            catalog.SOURCES_BY_LABEL["dzialki (EGIB)"], url=srv.url))
+        dock.sources.select_labels(["dzialki (EGIB)"])
+        dock.scope.tabs.setCurrentIndex(ScopeTab.IDS)
+        dock.scope.txt_ids.setPlainText("022602_1.0003.0")
+        dock.start()
+        _wait(dock)
+        row = dock.tasks.rows.itemAt(0).widget()
+        assert "5 obiektów" in row.result.text() and "opendata" in row.result.text()
+        assert row.btn_retry.text() == "Pobierz mimo to" and _layer("Dzialki") is None
+        row.btn_retry.click()
+        _wait(dock)
+        done = dock.tasks.rows.itemAt(0).widget()
+        assert "✓" in done.result.text() and _layer("Dzialki").featureCount() == 5
+        # „Pokaż” przybliża mapę do wyniku
+        assert not done.btn_show.isHidden()
+        dock.canvas.setExtent(dock.canvas.fullExtent())
+        done.btn_show.click()
+        assert dock.canvas.extent().intersects(_layer("Dzialki").extent())
+    finally:
+        srv.close()
+
+
+def test_area_and_layer_hints(dock):
+    from qgis.core import (QgsCoordinateReferenceSystem, QgsFeature, QgsGeometry, QgsProject,
+                           QgsRectangle, QgsVectorLayer)
+    widgets = importlib.import_module(f"{PLUGIN_NAME}.ui.widgets")
+    assert widgets.format_area(2500) == "2500 m²" and widgets.format_area(125000) == "12,5 ha"
+    assert widgets.format_area(3_450_000) == "3,45 km²"
+    dock.canvas.setDestinationCrs(QgsCoordinateReferenceSystem("EPSG:2180"))
+    dock._on_rect(QgsRectangle(284000, 366000, 285000, 367500))
+    assert "1,50 km²" in dock.scope.map_hint.text()
+    vl = QgsVectorLayer("Polygon?crs=EPSG:2180", "zasieg", "memory")
+    feats = []
+    for i in range(3):
+        f = QgsFeature()
+        f.setGeometry(QgsGeometry.fromRect(QgsRectangle(i, 0, i + 1, 1)))
+        feats.append(f)
+    vl.dataProvider().addFeatures(feats)
+    QgsProject.instance().addMapLayer(vl)
+    dock.scope.tabs.setCurrentIndex(ScopeTab.LAYER)
+    dock.scope.cmb_layer.setLayer(vl)
+    assert "Obiektów: 3" in dock.scope.layer_hint.text()
+    dock.scope.chk_selected.setChecked(True)
+    assert "Obiektów: 0" in dock.scope.layer_hint.text()
