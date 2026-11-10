@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """Lokalny, udawany serwer WFS 2.0 do testów pobierania (stronicowanie, błędy)."""
+import random
+import re
 import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -8,6 +10,14 @@ HEADER = ('<?xml version="1.0" encoding="UTF-8"?>\n'
           '<wfs:FeatureCollection xmlns:ms="http://mapserver.gis.umn.edu/mapserver" '
           'xmlns:gml="http://www.opengis.net/gml/3.2" xmlns:wfs="http://www.opengis.net/wfs/2.0" '
           'numberMatched="{matched}" numberReturned="{returned}">')
+
+
+def _x(i: int) -> float:
+    return 284000 + (i // 100) * 20
+
+
+def _y(i: int) -> float:
+    return 366000 + (i % 100) * 20
 
 
 def parcel(i: int) -> str:
@@ -29,7 +39,17 @@ class FakeWfs:
     `max_count`: serwer oddaje najwyżej tyle obiektów na stronę (limit po stronie usługi).
     """
 
-    def __init__(self, total: int = 1005, fail_filters=(), exception_filters=(), max_count=None):
+    def __init__(self, total: int = 1005, fail_filters=(), exception_filters=(), max_count=None,
+                 spatial=False, unstable=False, reject_intersects=False):
+        """
+        `spatial`: filtr BBOX/Intersects naprawdę wybiera działki w zasięgu (prostokąt otaczający).
+        `unstable`: każda odpowiedź w innej kolejności – stronicowanie gubi obiekty
+                    (jak serwer bez stałego sortowania).
+        `reject_intersects`: fes:Intersects → ExceptionReport (usługa bez obsługi wielokąta).
+        """
+        self.spatial = spatial
+        self.unstable = unstable
+        self.reject_intersects = reject_intersects
         self.total = total
         self.fail_filters = list(fail_filters)
         self.exception_filters = list(exception_filters)
@@ -59,8 +79,23 @@ class FakeWfs:
                 start, count = int(q.get("startIndex", 0)), int(q.get("count", 1000))
                 if outer.max_count:
                     count = min(count, outer.max_count)
-                ids = range(start, min(start + count, outer.total))
-                body = HEADER.format(matched=outer.total, returned=len(ids)) + \
+                flt = q.get("filter", "")
+                if outer.reject_intersects and "Intersects" in flt:
+                    outer.exception_filters.append(flt)
+                    self.do_GET()
+                    return
+                pool = list(range(outer.total))
+                if outer.spatial and ("Envelope" in flt or "posList" in flt):
+                    nums = [float(v) for v in re.findall(r"(?:Corner|posList)[^>]*>([^<]+)<", flt)
+                            for v in v.split()]
+                    ys, xs = nums[0::2], nums[1::2]          # URN EPSG:2180: N E
+                    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+                    pool = [i for i in pool if _x(i) <= x1 and _x(i) + 10 >= x0
+                            and _y(i) <= y1 and _y(i) + 10 >= y0]
+                if outer.unstable:
+                    random.shuffle(pool)
+                ids = pool[start:start + count]
+                body = HEADER.format(matched=len(pool), returned=len(ids)) + \
                     "".join(parcel(i) for i in ids) + "</wfs:FeatureCollection>"
                 data = body.encode("utf-8")
                 self.send_response(200)

@@ -446,8 +446,7 @@ class PD_GUGiKDock(QDockWidget):
             if sel.skorowidz is not None:
                 self._search_skorowidz(sel, geom)
             for s in sel.sources:
-                self._download(s, [tasks.Query(filters.spatial(s.geom_field, geom.asWkt()), label=label)],
-                               out, label)
+                self._download(s, [scope_mod.rect_query(s, geom, label)], out, label)
         elif scope.kind == "polygon":
             geom = self._to_2180(scope.geom)
             if sel.skorowidz is not None:

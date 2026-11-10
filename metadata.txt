@@ -8,7 +8,7 @@ qgisMinimumVersion=3.40
 qgisMaximumVersion=4.99
 supportsQt6=True
 description=Pobieranie danych z usług GUGiK: EGiB, RCN, PRG, PRNG, pliki ze skorowidzów (ortofotomapa, LIDAR, NMT/NMPT) i powiatowe WFS z EZiUDP. Download data from Polish GUGiK services (cadastre, real estate prices, boundaries, place names, sheet indexes).
-version=1.9.13
+version=1.9.14
 author=Główny Urząd Geodezji i Kartografii (GUGiK) - Łukasz Świątek
 email=uslugi.iip@gugik.gov.pl
 
@@ -27,6 +27,11 @@ repository=https://github.com/GlownyUrzadGeodezjiIKartografii/pobierz_dane_GUGiK
 hasProcessingProvider=yes
 # Uncomment the following line and add your changelog:
 changelog=
+	1.9.14
+		- poprawka: zakres „wielokąt” i „warstwa” – filtr wielokąta zapisany w EPSG:2180 w postaci URN; krótkie „EPSG:2180” usługa PRG (adresy, ulice) czytała z zamienionymi osiami i nic nie zwracała
+		- poprawka: luki w pobranych danych – duże zakresy (widok, prostokąt, wielokąt, warstwa, jednostka) są dzielone na kafle po maks. 1000 obiektów zamiast stronicowania, które przy usługach bez stałej kolejności gubiło część obiektów
+		- gdy usługa odrzuca filtr wielokąta, wtyczka sama pobiera prostokąt otaczający i przycina wynik
+		- szybsze przycinanie do granicy zakresu (geometria przygotowana raz)
 	1.9.13
 		- zapis w tle: obiekty dla warstwy budowane w zadaniu pobierania; w głównym wątku zostaje samo dodanie (100 tys. działek: ok. 0,3 s zamiast kilku sekund zamrożenia QGIS)
 		- komunikat na pasku QGIS po zakończeniu ostatniego zadania: ile obiektów, w jakich warstwach, ile plików i czy były problemy

@@ -404,3 +404,67 @@ def test_download_task_prepares_features(server):
     task = tasks.WfsDownloadTask(_source(server.url), [filters.bbox("geom", 0, 0, 1, 1)])
     task.run()
     assert task.result.prepared is not None and len(task.result.prepared.features) == 1005
+
+
+# ---------------------------------------------------------------- kafle zamiast stronicowania
+
+def test_unstable_paging_loses_features_but_tiles_get_all():
+    """Serwer bez stałego porządku: stronicowanie gubi obiekty, kafle – nie."""
+    from qgis.core import QgsGeometry
+    tasks, scope = mod("tasks"), mod("scope")
+    srv = FakeWfs(total=3000, spatial=True, unstable=True)
+    try:
+        src = _source(srv.url)
+        area = QgsGeometry.fromWkt("POLYGON((283990 365990, 284600 365990, 284600 368000, "
+                                   "283990 368000, 283990 365990))")
+        plain = tasks.WfsDownloadTask(src, [tasks.Query(mod("filters").spatial("geom", area.asWkt()))])
+        plain.run()
+        ids = {f["attrs"]["ID_DZIALKI"] for f in plain.result.features}
+        assert len(ids) < 3000                                  # stronicowanie zgubiło część
+        srv.requests.clear()
+        tiled = tasks.WfsDownloadTask(src, [scope.rect_query(src, area, "prostokąt")])
+        tiled.run()
+        ids = [f["attrs"]["ID_DZIALKI"] for f in tiled.result.features]
+        assert len(set(ids)) == 3000 and len(ids) == 3000       # wszystkie, bez duplikatów
+        assert all(int(r["count"]) <= 1000 and int(r.get("startIndex", 0)) == 0 for r in srv.requests)
+    finally:
+        srv.close()
+
+
+def test_polygon_tiles_skip_quadrants_outside_and_clip():
+    from qgis.core import QgsGeometry
+    tasks, scope = mod("tasks"), mod("scope")
+    srv = FakeWfs(total=3000, spatial=True, unstable=True)
+    try:
+        src = _source(srv.url)
+        # „L”: lewa kolumna + dolny pas
+        poly = QgsGeometry.fromWkt("POLYGON((284000 366000, 284600 366000, 284600 366300, 284200 366300, "
+                                   "284200 368000, 284000 368000, 284000 366000))")
+        task = tasks.WfsDownloadTask(src, scope.geometry_queries(src, [poly], "L"))
+        task.run()
+        got = {f["attrs"]["ID_DZIALKI"] for f in task.result.features}
+        expected = {f"022602_1.0003.{i}" for i in range(3000)
+                    if poly.intersects(QgsGeometry.fromWkt(
+                        f"POLYGON(({284000 + (i // 100) * 20} {366000 + (i % 100) * 20}, "
+                        f"{284010 + (i // 100) * 20} {366000 + (i % 100) * 20}, "
+                        f"{284010 + (i // 100) * 20} {366010 + (i % 100) * 20}, "
+                        f"{284000 + (i // 100) * 20} {366000 + (i % 100) * 20}))"))}
+        assert got == expected
+    finally:
+        srv.close()
+
+
+def test_polygon_filter_uses_urn_and_falls_back_to_bbox():
+    from qgis.core import QgsGeometry
+    tasks, scope, filters = mod("tasks"), mod("scope"), mod("filters")
+    poly = QgsGeometry.fromWkt("POLYGON((284000 366000, 284100 366000, 284100 366100, 284000 366000))")
+    assert 'srsName="urn:ogc:def:crs:EPSG::2180"' in filters.spatial("geom", poly.asWkt(), use_bbox=False)
+    srv = FakeWfs(total=3000, spatial=True, reject_intersects=True)
+    try:
+        src = _source(srv.url)
+        task = tasks.WfsDownloadTask(src, scope.geometry_queries(src, [poly], "trójkąt"))
+        task.run()
+        assert task.result.errors == [] and task.result.features
+        assert all(poly.intersects(QgsGeometry.fromWkt(f["geom"])) for f in task.result.features)
+    finally:
+        srv.close()

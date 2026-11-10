@@ -58,10 +58,13 @@ def clip(features: list, geom: Optional[QgsGeometry]) -> list:
     """Zostawia obiekty przecinające `geom` (filtr lokalny po zapytaniu BBOX)."""
     if geom is None or geom.isEmpty():
         return features
+    # geometria przygotowana raz – szybkie sprawdzanie tysięcy obiektów względem granicy gminy
+    engine = QgsGeometry.createGeometryEngine(geom.constGet())
+    engine.prepareGeometry()
     out = []
     for f in features:
-        g = QgsGeometry.fromWkt(f["geom"])
-        if not g.isNull() and g.intersects(geom):
+        g = f["geom"] if isinstance(f["geom"], QgsGeometry) else QgsGeometry.fromWkt(f["geom"])
+        if not g.isNull() and engine.intersects(g.constGet()):
             out.append(f)
     return out
 

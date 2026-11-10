@@ -12,10 +12,10 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional
 
-from qgis.core import QgsGeometry, QgsTask
+from qgis.core import QgsGeometry, QgsRectangle, QgsTask
 from qgis.PyQt.QtCore import pyqtSignal
 
-from . import gml, layers, log, net
+from . import filters, gml, layers, log, net
 from .catalog import Source
 from .wfs import PAGE_SIZE, WfsClient
 
@@ -26,12 +26,30 @@ def _close(session) -> None:
         session.close()
 
 
+MAX_TILE_DEPTH = 10      # 4^10 kafli – zakres podzielony do ok. 1/1000 boku
+MIN_TILE = 20.0          # m – mniejszych kafli nie dzielimy (gęsto zabudowany kwartał)
+
+
+def _quadrants(r: QgsRectangle) -> list:
+    cx, cy = r.center().x(), r.center().y()
+    return [QgsRectangle(r.xMinimum(), r.yMinimum(), cx, cy), QgsRectangle(cx, r.yMinimum(), r.xMaximum(), cy),
+            QgsRectangle(r.xMinimum(), cy, cx, r.yMaximum()), QgsRectangle(cx, cy, r.xMaximum(), r.yMaximum())]
+
+
 @dataclass
 class Query:
-    """Jedno zapytanie: filtr FES i opcjonalna geometria do przycięcia wyników."""
+    """
+    Jedno zapytanie: filtr FES i opcjonalna geometria do przycięcia wyników.
+
+    `rect` (EPSG:2180) – zasięg zapytania; pozwala podzielić je na kafle, gdy
+    serwer zgłosi więcej obiektów niż jedna strona. `extra_filter` – część
+    filtra niezależna od położenia (np. kod TERYT), dokładana do każdego kafla.
+    """
     filter_xml: str
     clip_geom: Optional[QgsGeometry] = None
     label: str = ""
+    rect: Optional[QgsRectangle] = None
+    extra_filter: str = ""
 
 
 @dataclass
@@ -105,20 +123,109 @@ class WfsDownloadTask(QgsTask):
         self.setProgress(100)
         return not self.result.canceled
 
+    # ------------------------------------------------------------------ kafle
+    #
+    # Stronicowanie (startIndex) bez stałego porządku po stronie serwera potrafi
+    # zgubić część obiektów: kolejne strony nie są rozłączne. Zamiast stronicować
+    # duży zakres, dzielimy go na ćwiartki, aż każda zmieści się na jednej stronie.
+
+    def _tile_filter(self, query: Query, rect: QgsRectangle) -> str:
+        bbox = filters.bbox(self.source.geom_field, rect.xMinimum(), rect.yMinimum(),
+                            rect.xMaximum(), rect.yMaximum())
+        return filters.combine([bbox, query.extra_filter]) if query.extra_filter else bbox
+
     def _run_query(self, query: Query, qi: int, n: int) -> list:
-        features, start = [], 0
+        self._seen_ids = set()
+        self._qi, self._n, self._got, self._total = qi, n, 0, -1
+        try:
+            features = self._fetch(query.filter_xml, query, query.rect, 0)
+        except RuntimeError as exc:
+            # Usługa bez obsługi fes:Intersects z wielokątem → prostokąt + przycięcie u nas
+            if "Intersects" not in query.filter_xml or query.rect is None or query.clip_geom is None:
+                raise
+            log.warning(f"[Pobieranie] {self.source.label}: filtr wielokąta odrzucony ({exc}) – "
+                        f"pobieram prostokąt otaczający i przycinam lokalnie")
+            self._seen_ids, self._got = set(), 0
+            features = self._fetch(self._tile_filter(query, query.rect), query, query.rect, 0)
+        return layers.clip(features, query.clip_geom)
+
+    def _keep(self, page: list) -> list:
+        """Obiekty, których jeszcze nie było (ten sam obiekt bywa w dwóch kaflach)."""
+        out = []
+        for f in page:
+            fid = f.get("id")
+            if fid:
+                if fid in self._seen_ids:
+                    continue
+                self._seen_ids.add(fid)
+            out.append(f)
+        return out
+
+    def _fetch(self, filter_xml: str, query: Query, rect, depth: int) -> list:
+        if self.isCanceled():
+            self.result.canceled = True
+            return []
+        can_split = rect is not None and depth < MAX_TILE_DEPTH \
+            and rect.width() > MIN_TILE and rect.height() > MIN_TILE
+        if can_split:
+            # liczba obiektów z małego zapytania (1 obiekt) – bez pobierania pełnej strony
+            matched = gml.number_matched(self.client.page(filter_xml, 0, 1, self.attributes))
+            if depth == 0:
+                self._check_size(matched)
+            if matched > PAGE_SIZE:
+                return self._split(query, rect, depth)
+        text = self.client.page(filter_xml, 0, PAGE_SIZE, self.attributes)
+        page = gml.parse_features(text)
+        matched = gml.number_matched(text)
+        if depth == 0 and not can_split:
+            self._check_size(matched)
+        if can_split and matched > len(page):
+            # serwer oddaje mniej niż PAGE_SIZE na stronę – też dzielimy
+            return self._split(query, rect, depth)
+        features = self._keep(page)
+        self._progress(len(features))
+        if matched >= 0 and len(page) < matched:
+            features += self._page_rest(filter_xml, len(page), matched)
+        elif matched < 0 and len(page) >= PAGE_SIZE:
+            features += self._page_rest(filter_xml, len(page), -1)
+        return features
+
+    def _check_size(self, matched: int) -> None:
+        if self.size_limit and matched > self.size_limit:
+            raise TooLarge(matched)
+        self._total = matched
+
+    def _split(self, query: Query, rect, depth: int) -> list:
+        log.info(f"[Pobieranie] {self.source.label}: kafel {rect.width():.0f}×{rect.height():.0f} m "
+                 f"ma więcej obiektów niż strona – dzielę na 4")
+        out = []
+        area = query.clip_geom
+        for quad in _quadrants(rect):
+            if area is not None and not area.intersects(QgsGeometry.fromRect(quad)):
+                continue        # ćwiartka poza zakresem (np. wielokąt w kształcie litery L)
+            out += self._fetch(self._tile_filter(query, quad), query, quad, depth + 1)
+            if self.result.canceled:
+                break
+        return out
+
+    def _progress(self, added: int) -> None:
+        self._got += added
+        self._report(self._qi, self._n, self._got, self._total)
+
+    def _page_rest(self, filter_xml: str, start: int, matched: int) -> list:
+        """Zwykłe stronicowanie – gdy kafla nie da się już dzielić albo zakres nie jest znany."""
+        features = []
         while True:
             if self.isCanceled():
                 self.result.canceled = True
                 break
-            text = self.client.page(query.filter_xml, start, PAGE_SIZE, self.attributes)
+            text = self.client.page(filter_xml, start, PAGE_SIZE, self.attributes)
             page = gml.parse_features(text)
-            matched = gml.number_matched(text)
-            if start == 0 and self.size_limit and matched > self.size_limit:
-                raise TooLarge(matched)
-            features.extend(page)
+            matched = gml.number_matched(text) if matched < 0 else matched
+            kept = self._keep(page)
+            features.extend(kept)
+            self._progress(len(kept))
             got = start + len(page)
-            self._report(qi, n, got, matched)
             if not page:
                 break
             if matched >= 0:
@@ -130,7 +237,7 @@ class WfsDownloadTask(QgsTask):
             if len(page) < PAGE_SIZE:
                 break
             start += PAGE_SIZE
-        return layers.clip(features, query.clip_geom)
+        return features
 
     def _report(self, qi: int, n: int, done_in_query: int, matched: int = -1) -> None:
         self.count_changed.emit(len(self.result.features) + done_in_query)

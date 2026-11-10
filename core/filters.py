@@ -3,7 +3,9 @@
 Filtry FES 2.0 dla zapytań WFS (EPSG:2180).
 
 Kolejność osi: EPSG:2180 w postaci URN ma oś N (Y) przed E (X), dlatego
-w Envelope piszemy '{ymin} {xmin}', a w posList '{y} {x}'.
+w Envelope piszemy '{ymin} {xmin}', a w posList '{y} {x}'. Zawsze z URN:
+krótkie „EPSG:2180” GeoServer (np. PRG – adresy i ulice) czyta jako X Y,
+a MapServer jako Y X – ten sam wielokąt trafiał wtedy w inne miejsce.
 """
 from xml.sax.saxutils import escape  # nosec B406 – tylko escape tekstu do XML, bez parsowania
 
@@ -59,7 +61,7 @@ def _intersects(geom_field: str, ring: list, n: int) -> str:
         coords.append(coords[0])
     return (
         f"<fes:Intersects><fes:ValueReference>{geom_field}</fes:ValueReference>"
-        f'<gml:Polygon gml:id="polygon_filter_{n}" srsName="EPSG:2180">'
+        f'<gml:Polygon gml:id="polygon_filter_{n}" srsName="urn:ogc:def:crs:EPSG::2180">'
         f"<gml:exterior><gml:LinearRing>"
         f'<gml:posList srsDimension="2">{" ".join(coords)}</gml:posList>'
         f"</gml:LinearRing></gml:exterior></gml:Polygon></fes:Intersects>"

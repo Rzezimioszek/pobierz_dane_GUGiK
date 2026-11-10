@@ -44,19 +44,25 @@ def geometry_queries(source: Source, geoms: list, label: str) -> list:
             flt = (filters.spatial(source.geom_field, hull.asWkt(), use_bbox=False)
                    if hull.constGet().nCoordinates() <= MAX_EXACT_COORDS
                    else filters.spatial(source.geom_field, g.asWkt(), use_bbox=True))
-        queries.append(Query(flt, clip_geom=g, label=name))
+        queries.append(Query(flt, clip_geom=g, label=name, rect=g.boundingBox()))
     return queries
 
 
 def teryt_query(source: Source, teryt: str, boundary: QgsGeometry, precise: bool = True) -> Query:
     """Jednostka administracyjna: granica PRG + (gdy źródło ma pole TERYT) filtr po kodzie."""
+    rect = boundary.boundingBox()
     if source.clip_locally:
         return Query(filters.spatial(source.geom_field, boundary.asWkt(), use_bbox=True),
-                     clip_geom=boundary, label=teryt)
+                     clip_geom=boundary, label=teryt, rect=rect)
+    code = filters.attribute(source.teryt_field, teryt, like=True)
     return Query(filters.combine([
-        filters.spatial(source.geom_field, boundary.asWkt(), use_bbox=not precise),
-        filters.attribute(source.teryt_field, teryt, like=True),
-    ]), label=teryt)
+        filters.spatial(source.geom_field, boundary.asWkt(), use_bbox=not precise), code,
+    ]), label=teryt, rect=rect, extra_filter=code)
+
+
+def rect_query(source: Source, geom: QgsGeometry, label: str) -> Query:
+    """Prostokąt (widok mapy, narysowany prostokąt) – z zasięgiem do dzielenia na kafle."""
+    return Query(filters.spatial(source.geom_field, geom.asWkt()), label=label, rect=geom.boundingBox())
 
 
 def boundary(teryt: str) -> Optional[QgsGeometry]:
