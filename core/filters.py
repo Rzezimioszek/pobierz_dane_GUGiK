@@ -17,6 +17,7 @@ except ImportError:
 from qgis.core import QgsGeometry, QgsWkbTypes
 
 from . import log
+from .i18n import tr
 from ..qt_compat import GEOM_POLYGON
 
 FES = 'xmlns:fes="http://www.opengis.net/fes/2.0"'
@@ -77,7 +78,7 @@ def spatial(geom_field: str, wkt: str, use_bbox: bool = True) -> str:
     """
     geom = QgsGeometry.fromWkt(wkt)
     if geom is None or geom.isNull() or geom.isEmpty():
-        raise ValueError(f"Nieprawidłowa geometria WKT: {wkt[:80]}")
+        raise ValueError(tr("Nieprawidłowa geometria WKT: ") + wkt[:80])
 
     rect = geom.boundingBox()
     rings = [] if use_bbox or QgsWkbTypes.geometryType(geom.wkbType()) != GEOM_POLYGON \

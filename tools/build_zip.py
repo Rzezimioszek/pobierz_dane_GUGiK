@@ -24,7 +24,7 @@ def main():
         for folder, dirs, files in os.walk(ROOT):
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
             for f in files:
-                if f in SKIP_FILES or f.startswith("_backup") or f.endswith(".pyc"):
+                if f in SKIP_FILES or f.startswith("_backup") or f.endswith((".pyc", ".ts")):
                     continue
                 path = os.path.join(folder, f)
                 info = zipfile.ZipInfo.from_file(path, os.path.join(NAME, os.path.relpath(path, ROOT)))

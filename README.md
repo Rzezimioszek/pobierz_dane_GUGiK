@@ -12,6 +12,7 @@ Wtyczka prowadzi przez trzy kroki – **co pobrać → skąd → jak zapisać** 
 
 - QGIS **3.40 LTR** lub nowszy, w tym **QGIS 4** (Qt6)
 - dostęp do internetu; serwer proxy ustawiony w QGIS (*Ustawienia → Opcje → Sieć*) jest używany automatycznie
+- interfejs po polsku albo po angielsku – według języka QGIS (każdy język inny niż polski dostaje wersję angielską)
 
 ## Instalacja
 
@@ -100,7 +101,8 @@ ui/          panel (dock.py), kroki i zadania (widgets.py), skorowidze (sheets.p
 processing/  dostawca i algorytmy Processing
 data/        style QML i słownik jednostek (jednostki.json.gz)
 tests/       testy pytest z udawanymi usługami WFS, PRG i ULDK
-tools/       budowanie paczki, odświeżanie słownika, zapis próbek z usług
+i18n/        tłumaczenie angielskie (.ts i .qm)
+tools/       budowanie paczki, odświeżanie słownika, tłumaczenia, zapis próbek z usług
 ```
 
 **Testy** działają na prawdziwym QGIS bez okna, z udawanymi usługami (bez sieci):
@@ -115,7 +117,8 @@ QT_QPA_PLATFORM=offscreen python -m pytest tests
 
 1. Uruchom `tools/odswiez_slowniki.py` (w konsoli Pythona QGIS albo z wiersza poleceń), żeby odświeżyć słownik województw, powiatów, gmin i obrębów z PRG. Skrypt wypisze zmiany do changelogu.
 2. Opcjonalnie `tools/zapisz_probki.py` – zapisuje prawdziwe odpowiedzi usług do `tests/fixtures/live/`, na których testy sprawdzają parser.
-3. `python tools/build_zip.py` – paczka do repozytorium QGIS w `dist/` (bez testów i narzędzi).
+3. `python tools/tlumaczenia.py` – zbiera napisy z kodu do `i18n/PD_GUGiK_en.ts` i buduje `.qm`; wypisze napisy bez angielskiego odpowiednika (uzupełnia się je w pliku `.ts`). Test pilnuje, żeby tłumaczenie było kompletne.
+4. `python tools/build_zip.py` – paczka do repozytorium QGIS w `dist/` (bez testów i narzędzi).
 
 Paczka przechodzi kontrole repozytorium QGIS: Bandit, detect-secrets, skaner zgodności z Qt6.
 
@@ -134,6 +137,8 @@ Pełna lista zmian każdej wersji jest w [metadata.txt](metadata.txt) i na stron
 - EZiUDP przez API JSON, użytki i kontury EGiB, odporność na niepoprawne odpowiedzi usług powiatowych.
 - Algorytmy Processing.
 - Słownik jednostek w jednym lekkim pliku; aktualna lista obrębów z ULDK.
+- Usługi powiatowe w tych samych trzech krokach i na liście zadań; pobieranie kaflami bez luk.
+- Interfejs po angielsku.
 - Minimalna wersja QGIS 3.40, pełna zgodność z QGIS 4.
 
 ### 1.3.0

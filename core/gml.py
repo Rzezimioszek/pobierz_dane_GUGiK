@@ -26,6 +26,7 @@ from qgis.PyQt.QtCore import QBuffer, QByteArray, QIODevice, QTextStream
 from qgis.PyQt.QtXml import QDomDocument, QDomElement, QDomNode
 
 from . import log
+from .i18n import server_error
 from ..qt_compat import dom_set_content
 
 try:
@@ -181,7 +182,7 @@ def read_typed(gml: str) -> list:
 
     error = service_exception(gml)
     if error:
-        raise RuntimeError(f"Serwer zwrócił błąd: {error}")
+        raise RuntimeError(server_error(error))
 
     folder = tempfile.mkdtemp(prefix="pd_gugik_")
     path = os.path.join(folder, "odpowiedz.gml")

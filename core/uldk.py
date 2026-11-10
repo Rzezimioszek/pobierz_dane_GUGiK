@@ -9,6 +9,7 @@ ULDK (uldk.gugik.gov.pl) – aktualna lista obrębów jednostki ewidencyjnej.
 Pierwsza linia to status (0 = OK, -1 = brak wyników / błąd).
 """
 from . import net
+from .i18n import tr
 
 ULDK_URL = "https://uldk.gugik.gov.pl/"
 ENABLED = True      # testy wyłączają zapytania do prawdziwej usługi
@@ -18,12 +19,12 @@ def parse_regions(text: str) -> list:
     """[(kod obrębu, nazwa obrębu, nazwa jednostki)]; pusta lista dla „-1 …”."""
     lines = [line.strip() for line in (text or "").replace("\r", "").split("\n") if line.strip()]
     if not lines:
-        raise RuntimeError("Pusta odpowiedź ULDK")
+        raise RuntimeError(tr("Pusta odpowiedź ULDK"))
     status = lines[0].split()[0]
     if status == "-1":
         return []
     if status != "0":
-        raise RuntimeError(f"Nieoczekiwana odpowiedź ULDK: {lines[0][:120]}")
+        raise RuntimeError(tr("Nieoczekiwana odpowiedź ULDK: ") + lines[0][:120])
     out = []
     for line in lines[1:]:
         parts = line.split("|")

@@ -551,7 +551,7 @@ class PD_GUGiKDock(QDockWidget):
         lst = QListWidget()
         for t in candidates:
             info = self.units.obreby_teryt_to_info.get(t, {})
-            lst.addItem(f"{info.get('nazwa', t)} ({t}) – gmina {self.units.gmina_name(t) or '?'}, "
+            lst.addItem(f"{info.get('nazwa', t)} ({t}) – {tr('gmina')} {self.units.gmina_name(t) or '?'}, "
                         f"{self.units.powiat_name(t) or '?'}")
         lst.setCurrentRow(0)
         lst.itemDoubleClicked.connect(lambda *_: dlg.accept())

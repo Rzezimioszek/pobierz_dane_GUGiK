@@ -22,6 +22,8 @@ import requests
 
 from qgis.core import QgsMessageLog, Qgis
 
+from .core.i18n import tr
+
 LOG_TAG = "PD_GUGiK"
 EZIUDP_API_URL = "https://integracja.gugik.gov.pl/eziudp/api.php"
 EZIUDP_BASE_URL = "https://integracja.gugik.gov.pl/eziudp/index.php"   # strona HTML – zapas
@@ -134,8 +136,7 @@ class EziudpClient:
             return EziudpResult(
                 success=False, teryt=teryt, zbior=zbior,
                 error_message=(
-                    f"Nieznany klucz zbioru: '{zbior}'. "
-                    f"Dostępne: {list(ZBIOR_CONFIG.keys())}"
+                    tr("Nieznany klucz zbioru: ") + f"'{zbior}'. {list(ZBIOR_CONFIG.keys())}"
                 ),
             )
         result = EziudpResult(teryt=teryt, zbior=zbior)
@@ -172,10 +173,10 @@ class EziudpClient:
 
             result.success = False
             result.error_message = (
-                f"EZiUDP nie zwrócił usługi pobierania dla TERYT={teryt}, "
-                f"zbior={cfg['eziudp_zbior']}"
-                + (f" (sprawdzono: {', '.join(tried)})" if tried else " (brak odpowiedzi)")
-                + (f"; odpowiedź HTML w {dump}" if dump else "")
+                tr("EZiUDP nie zwrócił usługi pobierania dla TERYT={0}, zbiór: {1}").format(
+                    teryt, cfg['eziudp_zbior'])
+                + (f" ({', '.join(tried)})" if tried else tr(" (brak odpowiedzi)"))
+                + (f"; HTML: {dump}" if dump else "")
             )
         except Exception as exc:
             result.success = False

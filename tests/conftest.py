@@ -27,6 +27,8 @@ def qgis_app():
         app = QgsApplication([], False)
         app.initQgis()
     import importlib
+    from qgis.PyQt.QtCore import QSettings
+    QSettings().setValue("locale/userLocale", "pl")   # testy sprawdzają polskie napisy z kodu
     importlib.import_module(f"{PLUGIN_NAME}.core.uldk").ENABLED = False   # bez prawdziwego ULDK
     yield app
 

@@ -8,7 +8,7 @@ qgisMinimumVersion=3.40
 qgisMaximumVersion=4.99
 supportsQt6=True
 description=Pobieranie danych z usług GUGiK: EGiB, RCN, PRG, PRNG, pliki ze skorowidzów (ortofotomapa, LIDAR, NMT/NMPT) i powiatowe WFS z EZiUDP. Download data from Polish GUGiK services (cadastre, real estate prices, boundaries, place names, sheet indexes).
-version=1.9.15
+version=1.9.16
 author=Główny Urząd Geodezji i Kartografii (GUGiK) - Łukasz Świątek
 email=uslugi.iip@gugik.gov.pl
 
@@ -27,6 +27,10 @@ repository=https://github.com/GlownyUrzadGeodezjiIKartografii/pobierz_dane_GUGiK
 hasProcessingProvider=yes
 # Uncomment the following line and add your changelog:
 changelog=
+	1.9.16
+		- angielska wersja interfejsu: panel, lista jednostek (województwo/powiat/gmina/obręb), usługi powiatowe, okno skorowidzów, komunikaty błędów i algorytmy Processing; język według ustawień QGIS (każdy inny niż polski dostaje angielski)
+		- wyłączenie wtyczki zdejmuje też jej tłumaczenie
+		- dla wydających: tools/tlumaczenia.py zbiera napisy i buduje plik tłumaczenia; test pilnuje kompletności
 	1.9.15
 		- usługi powiatowe (EZiUDP) działają jak pozostałe dane: warstwy wybiera się w kroku 1, zakres w kroku 2 (jednostka, mapa, warstwa), zapis w kroku 3; osobne okno zniknęło
 		- pobieranie z usług powiatowych jest na liście zadań: postęp z liczbą obiektów, Anuluj, Pokaż, Ponów tylko dla powiatów, które się nie udały; bez blokujących okienek

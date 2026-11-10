@@ -14,6 +14,7 @@ import re
 from typing import Optional
 
 from ..core import log
+from ..core.i18n import tr
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 
@@ -102,13 +103,13 @@ class AdminUnits:
                                             "powiat_code": t[:4], "jednostka": jedn}
 
         for t, d in self.wojewodztwa.items():
-            self.name_to_teryt[f"{d['nazwa']} (województwo {t})"] = t
+            self.name_to_teryt[f"{d['nazwa']} ({tr('województwo')} {t})"] = t
         for t, d in self.powiaty.items():
-            self.name_to_teryt[f"{d['nazwa']} (powiat {t})"] = t
+            self.name_to_teryt[f"{d['nazwa']} ({tr('powiat')} {t})"] = t
         for t, d in self.gminy.items():
-            self.name_to_teryt[f"{d['nazwa']} (gmina {t})"] = t
+            self.name_to_teryt[f"{d['nazwa']} ({tr('gmina')} {t})"] = t
         for t, d in self.obreby_teryt_to_info.items():
-            self.name_to_teryt[f"{d['nazwa']} (obręb {t})"] = t
+            self.name_to_teryt[f"{d['nazwa']} ({tr('obręb')} {t})"] = t
         log.info(f"[Jednostki] {len(self.wojewodztwa)} woj., {len(self.powiaty)} pow., "
                  f"{len(self.gminy)} gmin, {len(self.obreby_teryt_to_info)} obrębów "
                  f"(stan: {self.date or 'nieznany'})")
@@ -140,22 +141,22 @@ class AdminUnits:
         """Czytelny opis jednostki do podpowiedzi pod polem; '' gdy kod nieznany."""
         lvl = self.level(teryt)
         if lvl == "województwo":
-            return f"województwo {self.wojewodztwa[teryt]['nazwa']}"
+            return f"{tr('województwo')} {self.wojewodztwa[teryt]['nazwa']}"
         if lvl == "powiat":
             woj = self.wojewodztwa.get(teryt[:2], {}).get("nazwa", "?")
-            return f"{self.powiaty[teryt]['nazwa']}, woj. {woj}"
+            return f"{self.powiaty[teryt]['nazwa']}, {tr('woj.')} {woj}"
         if lvl == "gmina":
             pow_ = self.powiaty.get(teryt[:4], {}).get("nazwa", "?")
-            return f"gmina {self.gminy[teryt]['nazwa']}, {pow_}"
+            return f"{tr('gmina')} {self.gminy[teryt]['nazwa']}, {pow_}"
         if lvl == "obręb":
             info = self.obreby_teryt_to_info[teryt]
             gm = self.gminy.get(info["gmina_code"], {}).get("nazwa", "?")
             jedn = self.jednostki.get(info["jednostka"])
-            return f"obręb {info['nazwa']}, gmina {gm}" + (f" ({jedn})" if jedn and jedn != gm else "")
+            return f"{tr('obręb')} {info['nazwa']}, {tr('gmina')} {gm}" + (f" ({jedn})" if jedn and jedn != gm else "")
         return ""
 
     def date_text(self) -> str:
-        return f"z dnia {self.date}" if self.date else "z wydania wtyczki"
+        return tr("z dnia ") + self.date if self.date else tr("z wydania wtyczki")
 
     def check(self, teryt: str) -> tuple:
         """
@@ -169,10 +170,10 @@ class AdminUnits:
             return known, ""
         fmt = teryt_format(teryt)
         if not fmt:
-            return "", ("Nieprawidłowy kod TERYT – oczekiwane: województwo 2 cyfry, powiat 4, "
-                        "gmina np. 146501_1, obręb np. 146501_1.0001.")
-        return fmt, (f"Tego kodu nie ma w słowniku jednostek ({self.date_text()}) – może to nowa "
-                     f"jednostka; zostanie sprawdzony w PRG przy pobieraniu.")
+            return "", tr("Nieprawidłowy kod TERYT – oczekiwane: województwo 2 cyfry, powiat 4, "
+                          "gmina np. 146501_1, obręb np. 146501_1.0001.")
+        return fmt, tr("Tego kodu nie ma w słowniku jednostek ({0}) – może to nowa "
+                       "jednostka; zostanie sprawdzony w PRG przy pobieraniu.").format(self.date_text())
 
     # ------------------------------------------------------------------ gmina ↔ jednostki ewidencyjne
     #
@@ -224,7 +225,7 @@ class AdminUnits:
                                                "powiat_code": code[:4], "jednostka": jedn}
             self._obreby_by_jednostka.setdefault(jedn, []).append(code)
             self.obreby_by_name.setdefault(name, []).append(code)
-            self.name_to_teryt[f"{name} (obręb {code})"] = code
+            self.name_to_teryt[f"{name} ({tr('obręb')} {code})"] = code
             new += 1
         return new
 

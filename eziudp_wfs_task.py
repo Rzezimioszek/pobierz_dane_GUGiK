@@ -29,6 +29,7 @@ from qgis.PyQt.QtCore import pyqtSignal
 from .eziudp_client import EziudpClient
 from .bdsog_harmonizer import get_harmonizer
 from .core import gml, layers, net
+from .core.i18n import mark, server_error, tr
 from .core.tiles import TileFetcher
 from .qt_compat import FIELD_STRING
 
@@ -51,38 +52,38 @@ _META_FIELDS = ["teryt_powiatu", "zrodlo_wfs"]
 AVAILABLE_LAYERS = [
     {
         "key":           "bdsog_poziom",
-        "label":         "Osnowa pozioma (BDSOG)",
+        "label":         mark("Osnowa pozioma (BDSOG)"),
         "zbior":         "bdsog",
         "layer_pattern": "poziom",
     },
     {
         "key":           "bdsog_wysok",
-        "label":         "Osnowa wysokościowa (BDSOG)",
+        "label":         mark("Osnowa wysokościowa (BDSOG)"),
         "zbior":         "bdsog",
         "layer_pattern": "wysok",
     },
     {
         "key":           "egib_dzi",
-        "label":         "Działki ewidencyjne (EGIB)",
+        "label":         mark("Działki ewidencyjne (EGIB)"),
         "zbior":         "egib",
         "layer_pattern": "dzialki",
     },
     {
         "key":           "egib_bud",
-        "label":         "Budynki ewidencyjne (EGIB)",
+        "label":         mark("Budynki ewidencyjne (EGIB)"),
         "zbior":         "egib",
         "layer_pattern": "budynki",
     },
     {
         "key":           "egib_pkt",
-        "label":         "Punkty graniczne (EGIB)",
+        "label":         mark("Punkty graniczne (EGIB)"),
         "zbior":         "egib",
         "layer_pattern": "punkty_graniczne",
     },
     # Użytki i kontury udostępnia tylko część usług powiatowych (np. ePODGiK)
     {
         "key":           "egib_uzy",
-        "label":         "Użytki gruntowe (EGIB)",
+        "label":         mark("Użytki gruntowe (EGIB)"),
         "zbior":         "egib",
         "layer_pattern": "uzytki",
         "layer_name":    "Uzytki",
@@ -91,7 +92,7 @@ AVAILABLE_LAYERS = [
     },
     {
         "key":           "egib_kon",
-        "label":         "Kontury klasyfikacyjne (EGIB)",
+        "label":         mark("Kontury klasyfikacyjne (EGIB)"),
         "zbior":         "egib",
         "layer_pattern": "kontury",
         "layer_name":    "Kontury_klasyfikacyjne",
@@ -102,7 +103,7 @@ AVAILABLE_LAYERS = [
     # nazwy warstw i style jak dla RCN zbiorczego, z sufiksem TERYT
     {
         "key":           "rcn_dzi",
-        "label":         "Działki (RCN)",
+        "label":         mark("Działki (RCN)"),
         "zbior":         "rcn",
         "layer_pattern": "dzialki",
         "layer_name":    "Dzialki_RCN",
@@ -110,7 +111,7 @@ AVAILABLE_LAYERS = [
     },
     {
         "key":           "rcn_bud",
-        "label":         "Budynki (RCN)",
+        "label":         mark("Budynki (RCN)"),
         "zbior":         "rcn",
         "layer_pattern": "budynki",
         "layer_name":    "Budynki_RCN",
@@ -118,7 +119,7 @@ AVAILABLE_LAYERS = [
     },
     {
         "key":           "rcn_lok",
-        "label":         "Lokale (RCN)",
+        "label":         mark("Lokale (RCN)"),
         "zbior":         "rcn",
         "layer_pattern": "lokale",
         "layer_name":    "Lokale_RCN",
@@ -126,7 +127,7 @@ AVAILABLE_LAYERS = [
     },
     {
         "key":           "bdot500",
-        "label":         "Budynki i obiekty tow. (BDOT500)",
+        "label":         mark("Budynki i obiekty tow. (BDOT500)"),
         "zbior":         "bdot500",
         "layer_pattern": "budynki",
     },
@@ -354,7 +355,7 @@ def _read_direct(
         text = net.get(session, base_url, params, timeout=180).text
         error = gml.service_exception(text)
         if error:
-            raise RuntimeError(f"Serwer zwrócił błąd: {error}")
+            raise RuntimeError(server_error(error))
         return text
 
     features, geom_type = [], ""
@@ -376,8 +377,8 @@ def _read_direct(
         attrs["zrodlo_wfs"] = wfs_url
         features.append({"geom": geom, "attrs": attrs})
     if features and not _plausible(features, rect):
-        raise RuntimeError("współrzędne z usługi leżą poza pytanym zakresem "
-                           "(inny układ albo kolejność osi)")
+        raise RuntimeError(tr("współrzędne z usługi leżą poza pytanym zakresem "
+                              "(inny układ albo kolejność osi)"))
     if clip_geom is not None:
         features = layers.clip(features, clip_geom)
     if features:
@@ -468,7 +469,7 @@ class EziudpWfsTask(QgsTask):
                 if vl is not None:
                     self._report.written.append(vl)
             except Exception as exc:
-                msg = f"Zapis warstwy {item['name']} nie powiódł się: {exc}"
+                msg = tr("Zapis warstwy {0} nie powiódł się: {1}").format(item['name'], exc)
                 QgsMessageLog.logMessage(f"[EziudpWfsTask] {msg}", LOG_TAG, Qgis.MessageLevel.Critical)
                 self._report.errors.append(msg)
         self._pending = []
@@ -510,7 +511,7 @@ class EziudpWfsTask(QgsTask):
 
             eziudp_result = self._eziudp.get_wfs_urls(teryt, zbior)
             if not eziudp_result.success or not eziudp_result.records:
-                err = eziudp_result.error_message or "powiat nie zgłosił usługi WFS do EZiUDP"
+                err = eziudp_result.error_message or tr("powiat nie zgłosił usługi WFS do EZiUDP")
                 QgsMessageLog.logMessage(f"[EziudpWfsTask] TERYT {teryt} zbior={zbior}: {err}",
                                          LOG_TAG, Qgis.MessageLevel.Warning)
                 self._fail(teryt, keys, f"TERYT {teryt} [{zbior.upper()}]: {err}")
@@ -530,7 +531,8 @@ class EziudpWfsTask(QgsTask):
                 wfs_layer_name = self._pick_wfs_layer(all_wfs_layers, pattern)
 
                 if not wfs_layer_name:
-                    msg = f"TERYT {teryt}: usługa powiatu nie udostępnia warstwy „{layer_cfg['label']}”"
+                    msg = tr("TERYT {0}: usługa powiatu nie udostępnia warstwy „{1}”").format(
+                        teryt, tr(layer_cfg['label']))
                     QgsMessageLog.logMessage(
                         f"[EziudpWfsTask] {msg} (wzorzec={pattern!r}, warstwy: {all_wfs_layers})",
                         LOG_TAG, Qgis.MessageLevel.Info)
@@ -546,7 +548,7 @@ class EziudpWfsTask(QgsTask):
                 if report.success:
                     any_ok = True
                 else:
-                    self._fail(teryt, [key], f"TERYT {teryt} [{layer_cfg['label']}]: {report.error}")
+                    self._fail(teryt, [key], f"TERYT {teryt} [{tr(layer_cfg['label'])}]: {report.error}")
 
         return any_ok
 
@@ -624,7 +626,7 @@ class EziudpWfsTask(QgsTask):
             # niektóre serwery odrzucają BBOX w adresie – wtedy cała warstwa i przycięcie lokalne
             wfs_vl, version = _try_wfs_layer(base_url, wfs_layer_name, None)
         if wfs_vl is None:
-            raise RuntimeError("usługa nie odpowiada jak WFS 2.0 ani 1.1")
+            raise RuntimeError(tr("usługa nie odpowiada jak WFS 2.0 ani 1.1"))
         fields, geom_type, features = _read_snapshot(wfs_vl, self._clip_geom, teryt, wfs_url,
                                                      self.isCanceled)
         del wfs_vl   # zwalnia połączenie i pamięć

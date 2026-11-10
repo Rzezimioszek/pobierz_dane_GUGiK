@@ -24,6 +24,7 @@ Pobieranie danych GUGiK
 from qgis.PyQt.QtCore import QCoreApplication, QLocale, QSettings, Qt, QTranslator
 from qgis.PyQt.QtGui import QIcon
 from .qt_compat import QAction
+from .core import i18n
 
 
 # Import the code for the DockWidget
@@ -52,19 +53,22 @@ class PD_GUGiK:
         # Język z ustawień QGIS; gdy wpisu brak (świeży profil) – język systemu
         locale = (QSettings().value('locale/userLocale', '', type=str)
                   or QLocale().name())[0:2]
-        locale_path = os.path.join(
-            self.plugin_dir,
-            'i18n',
-            'PD_GUGiK_{}.qm'.format(locale))
+        locale_path = os.path.join(self.plugin_dir, 'i18n', 'PD_GUGiK_{}.qm'.format(locale))
+        if locale != 'pl' and not os.path.exists(locale_path):
+            # napisy w kodzie są po polsku; każdy inny język dostaje angielski
+            locale_path = os.path.join(self.plugin_dir, 'i18n', 'PD_GUGiK_en.qm')
 
+        self.translator = None
         if os.path.exists(locale_path):
             self.translator = QTranslator()
-            self.translator.load(locale_path)
-            QCoreApplication.installTranslator(self.translator)
+            if self.translator.load(locale_path):
+                QCoreApplication.installTranslator(self.translator)
+            else:
+                self.translator = None
 
         # Declare instance attributes
         self.actions = []
-        self.menu = self.tr(u'&Pobierz dane GUGiK')
+        self.menu = i18n.tr('&Pobierz dane GUGiK')
         # TODO: We are going to let the user set this up in a future iteration
         self.toolbar = self.iface.addToolBar(u'PobieranieGUGiK')
         self.toolbar.setObjectName(u'PobieranieGUGiK')
@@ -89,7 +93,7 @@ class PD_GUGiK:
         :rtype: QString
         """
         # noinspection PyTypeChecker,PyArgumentList,PyCallByClass
-        return QCoreApplication.translate('PobieranieGUGiK', message)
+        return i18n.tr(message)
 
     def add_action(
             self,
@@ -170,7 +174,7 @@ class PD_GUGiK:
         icon_path = os.path.join(os.path.dirname(__file__), 'icon.png')
         self.add_action(
             icon_path,
-            text=self.tr(u'Pobierz dane GUGiK'),
+            text=i18n.tr('Pobierz dane GUGiK'),
             callback=self.run,
             parent=self.iface.mainWindow())
         self.initProcessing()
@@ -233,6 +237,10 @@ class PD_GUGiK:
             self.iface.mainWindow().removeToolBar(self.toolbar)
             self.toolbar.deleteLater()
             self.toolbar = None
+
+        if self.translator is not None:
+            QCoreApplication.removeTranslator(self.translator)
+            self.translator = None
 
     # --------------------------------------------------------------------------
 

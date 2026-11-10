@@ -13,19 +13,15 @@ from qgis.core import (
     QgsProcessingParameterFeatureSource, QgsProcessingParameterField,
     QgsProcessingParameterString, QgsWkbTypes,
 )
-from qgis.PyQt.QtCore import QCoreApplication
 from qgis.PyQt.QtGui import QIcon
 
 from ..core import catalog, layers
 from ..core import scope as scope_mod
+from ..core.i18n import tr
 from ..core.tasks import WfsDownloadTask
 
 CRS_2180 = QgsCoordinateReferenceSystem("EPSG:2180")
 ICON = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "icon.png")
-
-
-def tr(text: str) -> str:
-    return QCoreApplication.translate("PD_GUGiK", text)
 
 
 def source_label(s) -> str:

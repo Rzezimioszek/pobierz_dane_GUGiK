@@ -95,7 +95,7 @@ def _start_with_boundary(dock, keys, teryt, out, label) -> None:
 
 
 def _title(keys, teryts, label) -> str:
-    what = (AVAILABLE_LAYERS_BY_KEY[keys[0]]["label"] if len(keys) == 1
+    what = (tr(AVAILABLE_LAYERS_BY_KEY[keys[0]]["label"]) if len(keys) == 1
             else tr("Usługi powiatowe: warstw ") + str(len(keys)))
     where = label if len(teryts) == 1 else label + " · " + tr("powiatów: ") + str(len(teryts))
     return f"{what} · {where}"

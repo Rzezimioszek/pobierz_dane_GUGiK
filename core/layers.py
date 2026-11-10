@@ -21,6 +21,7 @@ from qgis.PyQt.QtCore import QDateTime
 
 from . import log
 from .catalog import Source
+from .i18n import tr
 from ..qt_compat import (
     FIELD_DOUBLE, FIELD_INT, FIELD_INTEGER_TYPES, FIELD_STRING, GEOM_LINE, GEOM_POLYGON,
 )
@@ -226,10 +227,10 @@ def _gpkg_layer(path: str, name: str, geom_type: str, fields: QgsFields) -> QgsV
     res = QgsVectorFileWriter.writeAsVectorFormatV3(
         template, path, QgsProject.instance().transformContext(), opts)
     if res[0] != QgsVectorFileWriter.WriterError.NoError:
-        raise IOError(f"Nie można utworzyć warstwy {name} w {path}: {res[1]}")
+        raise IOError(tr("Nie można utworzyć warstwy {0} w {1}: {2}").format(name, path, res[1]))
     layer = QgsVectorLayer(uri, name, "ogr")
     if not layer.isValid():
-        raise IOError(f"Nie można otworzyć warstwy {name} w {path}")
+        raise IOError(tr("Nie można otworzyć warstwy {0} w {1}").format(name, path))
     return layer
 
 
@@ -298,15 +299,15 @@ def stamp(layer, info: Optional[dict], added: int) -> None:
     if not md.title():
         md.setTitle(layer.name())
     md.setAbstract("\n".join(x for x in (
-        "Dane pobrane wtyczką „Pobierz dane GUGiK”.",
-        f"Usługa: {url}" if url else "",
-        f"Warstwa usługi: {typename}" if typename else "",
-        f"Ostatnie pobranie: {now}" + (f", zakres: {scope}" if scope else ""),
+        tr("Dane pobrane wtyczką „Pobierz dane GUGiK”."),
+        tr("Usługa: ") + url if url else "",
+        tr("Warstwa usługi: ") + typename if typename else "",
+        tr("Ostatnie pobranie: ") + now + (tr(", zakres: ") + scope if scope else ""),
     ) if x))
-    md.addHistoryItem(f"{now} · {added} obiektów" + (f" · {scope}" if scope else "")
+    md.addHistoryItem(f"{now} · {added}" + tr(" obiektów") + (f" · {scope}" if scope else "")
                       + (f" · {url}" if url else ""))
     if url and not any(link.url == url for link in md.links()):
-        link = QgsAbstractMetadataBase.Link("Usługa WFS", "OGC:WFS", url)
+        link = QgsAbstractMetadataBase.Link(tr("Usługa WFS"), "OGC:WFS", url)
         md.addLink(link)
     layer.setMetadata(md)
 

@@ -23,6 +23,8 @@ from qgis.PyQt.QtWidgets import (
 )
 from qgis.PyQt.QtCore import Qt, pyqtSignal
 
+from .core.i18n import tr
+
 
 class TerytScopeWidget(QWidget):
     """
@@ -56,27 +58,27 @@ class TerytScopeWidget(QWidget):
 
         # Wiersz 1: combobox województwa
         row1 = QHBoxLayout()
-        row1.addWidget(QLabel("Województwo:"))
+        row1.addWidget(QLabel(tr("Województwo:")))
         self.cmb_woj = QComboBox()
-        self.cmb_woj.addItem("- Wybierz -", None)
+        self.cmb_woj.addItem(tr("- Wybierz -"), None)
         row1.addWidget(self.cmb_woj, 1)
         lay.addLayout(row1)
 
         # Wiersz 2: combobox powiatu
         row2 = QHBoxLayout()
-        row2.addWidget(QLabel("Powiat:"))
+        row2.addWidget(QLabel(tr("Powiat:")))
         self.cmb_pow = QComboBox()
         self.cmb_pow.setEnabled(False)
-        self.cmb_pow.addItem("- Wybierz -", None)
+        self.cmb_pow.addItem(tr("- Wybierz -"), None)
         row2.addWidget(self.cmb_pow, 1)
         lay.addLayout(row2)
 
         # Wiersz 3: combobox gminy
         row3 = QHBoxLayout()
-        row3.addWidget(QLabel("Gmina:"))
+        row3.addWidget(QLabel(tr("Gmina:")))
         self.cmb_gmina = QComboBox()
         self.cmb_gmina.setEnabled(False)
-        self.cmb_gmina.addItem("- Wybierz -", None)
+        self.cmb_gmina.addItem(tr("- Wybierz -"), None)
         row3.addWidget(self.cmb_gmina, 1)
         lay.addLayout(row3)
 
@@ -84,10 +86,10 @@ class TerytScopeWidget(QWidget):
         self.row_obreb = QWidget()
         rowo = QHBoxLayout(self.row_obreb)
         rowo.setContentsMargins(0, 0, 0, 0)
-        rowo.addWidget(QLabel("Obręb:"))
+        rowo.addWidget(QLabel(tr("Obręb:")))
         self.cmb_obreb = QComboBox()
         self.cmb_obreb.setEnabled(False)
-        self.cmb_obreb.addItem("- cała gmina -", None)
+        self.cmb_obreb.addItem(tr("- cała gmina -"), None)
         rowo.addWidget(self.cmb_obreb, 1)
         lay.addWidget(self.row_obreb)
         self.lbl_obreby = QLabel("")
@@ -99,9 +101,9 @@ class TerytScopeWidget(QWidget):
 
         # Wiersz 4: pole tekstowe z completerem
         row4 = QHBoxLayout()
-        row4.addWidget(QLabel("TERYT / nazwa:"))
+        row4.addWidget(QLabel(tr("TERYT / nazwa:")))
         self.txt_teryt = QLineEdit()
-        self.txt_teryt.setPlaceholderText("np. Warszawa, 14, 1462, 146201_1")
+        self.txt_teryt.setPlaceholderText(tr("np. Warszawa, 14, 1462, 146201_1"))
         row4.addWidget(self.txt_teryt, 1)
         lay.addLayout(row4)
 
@@ -142,7 +144,7 @@ class TerytScopeWidget(QWidget):
         # Wypełnij cmb_woj
         self._blocking = True
         self.cmb_woj.clear()
-        self.cmb_woj.addItem("- Wybierz -", None)
+        self.cmb_woj.addItem(tr("- Wybierz -"), None)
         for teryt, info in sorted(
             wojewodztwa.items(), key=lambda x: x[1].get("nazwa", "")
         ):
@@ -151,10 +153,10 @@ class TerytScopeWidget(QWidget):
 
         self.cmb_pow.clear()
         self.cmb_pow.setEnabled(False)
-        self.cmb_pow.addItem("- Wybierz -", None)
+        self.cmb_pow.addItem(tr("- Wybierz -"), None)
         self.cmb_gmina.clear()
         self.cmb_gmina.setEnabled(False)
-        self.cmb_gmina.addItem("- Wybierz -", None)
+        self.cmb_gmina.addItem(tr("- Wybierz -"), None)
 
         # QCompleter
         completer = QCompleter(list(name_to_teryt.keys()), self.txt_teryt)
@@ -201,10 +203,10 @@ class TerytScopeWidget(QWidget):
         self.cmb_woj.setCurrentIndex(0)
         self.cmb_pow.clear()
         self.cmb_pow.setEnabled(False)
-        self.cmb_pow.addItem("- Wybierz -", None)
+        self.cmb_pow.addItem(tr("- Wybierz -"), None)
         self.cmb_gmina.clear()
         self.cmb_gmina.setEnabled(False)
-        self.cmb_gmina.addItem("- Wybierz -", None)
+        self.cmb_gmina.addItem(tr("- Wybierz -"), None)
         self.lbl_info.setText("")
         self._blocking = False
         self._clear_obreby()
@@ -221,9 +223,9 @@ class TerytScopeWidget(QWidget):
 
         self._blocking = True
         self.cmb_pow.clear()
-        self.cmb_pow.addItem("- Wybierz -", None)
+        self.cmb_pow.addItem(tr("- Wybierz -"), None)
         self.cmb_gmina.clear()
-        self.cmb_gmina.addItem("- Wybierz -", None)
+        self.cmb_gmina.addItem(tr("- Wybierz -"), None)
         self.cmb_gmina.setEnabled(False)
         self._blocking = False
         self._clear_obreby()
@@ -247,7 +249,7 @@ class TerytScopeWidget(QWidget):
 
         self._blocking = True
         self.cmb_gmina.clear()
-        self.cmb_gmina.addItem("- Wybierz -", None)
+        self.cmb_gmina.addItem(tr("- Wybierz -"), None)
         self._blocking = False
         self._clear_obreby()
 
@@ -290,7 +292,7 @@ class TerytScopeWidget(QWidget):
         self._obreby_gmina = ""
         self._blocking, was = True, self._blocking
         self.cmb_obreb.clear()
-        self.cmb_obreb.addItem("- cała gmina -", None)
+        self.cmb_obreb.addItem(tr("- cała gmina -"), None)
         self.cmb_obreb.setEnabled(False)
         self._blocking = was
         self.lbl_obreby.setVisible(False)
@@ -307,7 +309,7 @@ class TerytScopeWidget(QWidget):
         was = self._blocking
         self._blocking = True
         self.cmb_obreb.clear()
-        self.cmb_obreb.addItem("- cała gmina -", None)
+        self.cmb_obreb.addItem(tr("- cała gmina -"), None)
         for code, name in obreby:
             self.cmb_obreb.addItem(f"{name} ({code})", code)
         self.cmb_obreb.setEnabled(bool(obreby))
@@ -364,7 +366,7 @@ class TerytScopeWidget(QWidget):
             or "." in raw
             or "*" in raw
         )
-        self.lbl_info.setText("" if valid else "Kod TERYT może być nieprawidłowy")
+        self.lbl_info.setText("" if valid else tr("Kod TERYT może być nieprawidłowy"))
         self.lbl_info.setVisible(not valid)
 
     def _sync_combos_from_teryt(self, teryt: str):
@@ -400,7 +402,7 @@ class TerytScopeWidget(QWidget):
 
     def _reload_pow(self, woj_id: str):
         self.cmb_pow.clear()
-        self.cmb_pow.addItem("- Wybierz -", None)
+        self.cmb_pow.addItem(tr("- Wybierz -"), None)
         self.cmb_pow.setEnabled(True)
         for teryt, info in sorted(
             self._powiaty.items(), key=lambda x: x[1].get("nazwa", "")
@@ -410,7 +412,7 @@ class TerytScopeWidget(QWidget):
 
     def _reload_gmina(self, pow_id: str):
         self.cmb_gmina.clear()
-        self.cmb_gmina.addItem("- Wybierz -", None)
+        self.cmb_gmina.addItem(tr("- Wybierz -"), None)
         self.cmb_gmina.setEnabled(True)
         for teryt, info in sorted(
             self._gminy.items(), key=lambda x: x[1].get("nazwa", "")

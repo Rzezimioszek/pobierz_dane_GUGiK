@@ -17,6 +17,7 @@ from qgis.PyQt.QtCore import pyqtSignal
 
 from . import filters, gml, layers, log, net
 from .catalog import Source
+from .i18n import tr
 from .tiles import TileFetcher
 from .wfs import WfsClient
 
@@ -57,7 +58,7 @@ class TooLarge(Exception):
     """Serwer zgłosił więcej obiektów niż limit zadania."""
 
     def __init__(self, matched: int):
-        super().__init__(f"{matched} obiektów")
+        super().__init__(f"{matched}" + tr(" obiektów"))
         self.matched = matched
 
 
@@ -170,7 +171,7 @@ class HitsTask(QgsTask):
     done = pyqtSignal(int)
 
     def __init__(self, source: Source, filter_xml: str):
-        super().__init__("Sprawdzanie liczby obiektów…", QgsTask.Flag.CanCancel)
+        super().__init__(tr("Sprawdzanie liczby obiektów…"), QgsTask.Flag.CanCancel)
         self.client = WfsClient(source.url, source.typename, source.geom_field)
         self.filter_xml = filter_xml
         self.hits = -1
@@ -196,7 +197,7 @@ class FileDownloadTask(QgsTask):
     CHUNK = 5 * 1024 * 1024
 
     def __init__(self, url: str, path: str, description: str = ""):
-        super().__init__(description or f"Pobieranie pliku {path}", QgsTask.Flag.CanCancel)
+        super().__init__(description or tr("Pobieranie pliku ") + path, QgsTask.Flag.CanCancel)
         self.url = url
         self.path = path
         self.error = None

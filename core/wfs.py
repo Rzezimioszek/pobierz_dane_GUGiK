@@ -8,6 +8,7 @@ except ImportError:
     from xml.etree import ElementTree as ET  # nosec
 
 from . import gml, log, net
+from .i18n import server_error
 
 PAGE_SIZE = 1000
 
@@ -68,5 +69,5 @@ class WfsClient:
         # bez tej kontroli wyglądałoby to jak „brak obiektów” i ucięłoby wynik.
         error = gml.service_exception(text)
         if error:
-            raise RuntimeError(f"Serwer zwrócił błąd: {error}")
+            raise RuntimeError(server_error(error))
         return text

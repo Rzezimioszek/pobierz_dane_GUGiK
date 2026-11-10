@@ -19,7 +19,7 @@ from qgis.PyQt.QtWidgets import (
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from . import tr
+from . import mark, tr
 from ..core import catalog, layers, tasks, uldk
 from ..core.catalog import EGIB_DZIALKI_ATTRIBUTES
 from ..eziudp_wfs_task import AVAILABLE_LAYERS, AVAILABLE_LAYERS_BY_KEY
@@ -32,12 +32,12 @@ SETTINGS = layers.SETTINGS_PREFIX
 ROLE = Qt.ItemDataRole.UserRole
 
 _KIND_NAMES = {
-    "dzialki": "Działki", "budynki": "Budynki", "lokale": "Lokale",
+    "dzialki": mark("Działki"), "budynki": mark("Budynki"), "lokale": mark("Lokale"),
 }
 _PRG_GROUPS = [
-    ("A", "Granice administracyjne i ewidencyjne"), ("R", "Rejony i obwody statystyczne"),
-    ("S", "Sądy"), ("P", "Prokuratury"), ("K", "Policja, straże, obrona cywilna"),
-    ("U", "Urzędy i instytucje"), ("W", "Obszary morskie"),
+    ("A", mark("Granice administracyjne i ewidencyjne")), ("R", mark("Rejony i obwody statystyczne")),
+    ("S", mark("Sądy")), ("P", mark("Prokuratury")), ("K", mark("Policja, straże, obrona cywilna")),
+    ("U", mark("Urzędy i instytucje")), ("W", mark("Obszary morskie")),
 ]
 
 
@@ -199,7 +199,7 @@ class Selection:
     def names(self) -> str:
         if self.eziudp:
             return tr("usługi powiatowe: ") + ", ".join(
-                AVAILABLE_LAYERS_BY_KEY[k]["label"] for k in self.eziudp)
+                tr(AVAILABLE_LAYERS_BY_KEY[k]["label"]) for k in self.eziudp)
         if self.skorowidz is not None:
             return f"skorowidz: {self.skorowidz.label}"
         return ", ".join(SourcePicker.display_name(s) for s in self.sources)
@@ -256,7 +256,7 @@ class SourcePicker(QWidget):
     def display_name(source) -> str:
         kind = source.label.split(" ")[0]
         if source.group in ("EGIB", "RCN"):
-            return f"{_KIND_NAMES.get(kind, kind)} ({'EGiB' if source.group == 'EGIB' else 'RCN'})"
+            return f"{tr(_KIND_NAMES.get(kind, kind))} ({'EGiB' if source.group == 'EGIB' else 'RCN'})"
         return kind.replace("_", " ")
 
     def _group(self, title: str, parent=None) -> QTreeWidgetItem:
@@ -459,10 +459,11 @@ class Scope:
 
     def describe(self) -> str:
         return {
-            "teryt": f"TERYT {self.teryt}", "extent": "widok mapy", "rect": "narysowany prostokąt",
-            "polygon": "narysowany wielokąt",
-            "layer": f"warstwa {self.layer.name() if self.layer else ''}",
-            "ids": f"{len(self.ids)} identyfikatorów", "obreb": f"obręb {self.obreb}, działka {self.nr}",
+            "teryt": f"TERYT {self.teryt}", "extent": tr("widok mapy"), "rect": tr("narysowany prostokąt"),
+            "polygon": tr("narysowany wielokąt"),
+            "layer": tr("warstwa ") + (self.layer.name() if self.layer else ""),
+            "ids": f"{len(self.ids)}" + tr(" identyfikatorów"),
+            "obreb": tr("obręb {0}, działka {1}").format(self.obreb, self.nr),
         }.get(self.kind, self.kind)
 
     def tag(self) -> str:
