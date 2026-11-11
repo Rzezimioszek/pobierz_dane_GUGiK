@@ -231,6 +231,21 @@ def test_eziudp_uses_steps_and_task_list(dock, county):
     assert "2 000" in row.result.text() and not row.btn_show.isHidden()
 
 
+def test_eziudp_voivodeship_asks_first(dock, county, monkeypatch):
+    ui_ez = importlib.import_module(f"{PLUGIN_NAME}.ui.eziudp")
+    launched, asked = [], []
+    monkeypatch.setattr(ui_ez, "launch", lambda *a, **k: launched.append(a))
+    dock.ask = lambda text: asked.append(text) or False
+    dock.sources.select_labels(["eziudp:egib_dzi"])
+    dock.scope.tabs.setCurrentIndex(ScopeTab.UNIT)
+    dock.scope.teryt.set_teryt("14")
+    dock.start()
+    assert asked and "42" in asked[0] and not launched
+    dock.ask = lambda text: True
+    dock.start()
+    assert len(launched) == 1 and len(launched[0][2]) == 42
+
+
 def test_eziudp_failed_county_offers_retry(dock, county):
     ui_ez = importlib.import_module(f"{PLUGIN_NAME}.ui.eziudp")
     county["fail"].add("0226")

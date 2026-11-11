@@ -203,3 +203,28 @@ def test_task_falls_back_to_qgis_provider(monkeypatch):
     t = task.EziudpWfsTask(["0226"], ["egib_dzi"], output=layers.Output(None, False))
     t.run()
     assert t._report.failed_pairs == [("0226", "egib_dzi")] and "zły GML" in t._report.errors[0]
+
+
+def test_whole_county_empty_result_falls_back_to_provider(monkeypatch):
+    """Cały powiat idzie kaflami po prostokącie powiatu; 0 obiektów (np. inna kolejność osi) → dostawca QGIS."""
+    from qgis.core import QgsFields, QgsGeometry, QgsRectangle
+    task = importlib.import_module(f"{PLUGIN_NAME}.eziudp_wfs_task")
+    layers = importlib.import_module(f"{PLUGIN_NAME}.core.layers")
+    ez = importlib.import_module(f"{PLUGIN_NAME}.eziudp_client")
+    monkeypatch.setattr(ez.EziudpClient, "get_wfs_urls", lambda self, t, z: ez.EziudpResult(
+        success=True, teryt=t, zbior=z, records=[ez.EziudpRecord(url_wfs="http://127.0.0.1:9/wfs")]))
+    monkeypatch.setattr(ez.EziudpClient, "get_layer_names", lambda self, u, z: ["ms:dzialki"])
+    rects = []
+
+    def direct(base, name, rect, *a, **k):
+        rects.append(rect)
+        return None, "", []
+    monkeypatch.setattr(task, "_read_direct", direct)
+    feat = {"geom": QgsGeometry.fromWkt("POINT(1 2)"), "attrs": {"teryt_powiatu": "0226"}}
+    provider = []
+    monkeypatch.setattr(task.EziudpWfsTask, "_read_with_provider",
+                        lambda self, *a: provider.append(a) or (QgsFields(), "Point", [feat], "1.1.0"))
+    t = task.EziudpWfsTask(["0226"], ["egib_dzi"], output=layers.Output(None, False),
+                           powiat_rects={"0226": QgsRectangle(0, 0, 10, 10)})
+    assert t.run()
+    assert rects[0] == QgsRectangle(0, 0, 10, 10) and provider and t._report.total_features == 1

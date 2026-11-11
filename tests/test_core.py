@@ -431,6 +431,47 @@ def test_unstable_paging_loses_features_but_tiles_get_all():
         srv.close()
 
 
+def test_tiles_work_when_server_hides_number_matched():
+    """MapServer usług zbiorczych EGiB/RCN: numberMatched="unknown" – kafle i tak, liczba z resultType=hits."""
+    from qgis.core import QgsGeometry
+    tasks, scope = mod("tasks"), mod("scope")
+    srv = FakeWfs(total=3000, spatial=True, unstable=True, unknown_matched=True)
+    try:
+        src = _source(srv.url)
+        area = QgsGeometry.fromWkt("POLYGON((283990 365990, 284600 365990, 284600 368000, "
+                                   "283990 368000, 283990 365990))")
+        task = tasks.WfsDownloadTask(src, [scope.rect_query(src, area, "prostokąt")])
+        totals = []
+        task.setProgress = lambda p: totals.append(p)
+        task.run()
+        ids = [f["attrs"]["ID_DZIALKI"] for f in task.result.features]
+        assert len(set(ids)) == 3000 and len(ids) == 3000
+        pages = [r for r in srv.requests if r.get("resultType") != "hits"]
+        assert all(int(r.get("startIndex", 0)) == 0 for r in pages), "kafle, nie stronicowanie"
+        assert sum(1 for r in srv.requests if r.get("resultType") == "hits") == 1
+        assert sum(1 for r in pages if r["count"] == "1") == 1, "bez liczby nie pytamy kafli o 1 obiekt"
+        assert 0 < totals[len(totals) // 2] < 99, "postęp z liczby z resultType=hits"
+        # ochrona przed dużym pobraniem działa też bez numberMatched
+        srv.requests.clear()
+        big = tasks.WfsDownloadTask(src, [scope.rect_query(src, area, "prostokąt")], size_limit=100)
+        big.run()
+        assert big.result.too_large == 3000 and not big.result.features and len(srv.requests) <= 3
+    finally:
+        srv.close()
+
+
+def test_paging_stops_when_server_ignores_start_index():
+    """Bez liczby obiektów i z ignorowanym startIndex stronicowanie nie może kręcić się w kółko."""
+    tasks, filters = mod("tasks"), mod("filters")
+    srv = FakeWfs(total=2500, unknown_matched=True, ignore_start=True)
+    try:
+        task = tasks.WfsDownloadTask(_source(srv.url), [filters.bbox("geom", 0, 0, 1, 1)])
+        task.run()
+        assert len(task.result.features) == 1000 and len(srv.requests) == 2
+    finally:
+        srv.close()
+
+
 def test_polygon_tiles_skip_quadrants_outside_and_clip():
     from qgis.core import QgsGeometry
     tasks, scope = mod("tasks"), mod("scope")

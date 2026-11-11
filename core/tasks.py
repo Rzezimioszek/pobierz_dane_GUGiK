@@ -78,7 +78,7 @@ class WfsDownloadTask(QgsTask):
 
     def __init__(self, source: Source, queries: list, attributes: Optional[list] = None,
                  expected: int = 0, description: str = "", size_limit: int = 0):
-        super().__init__(description or f"Pobieranie: {source.label}", QgsTask.Flag.CanCancel)
+        super().__init__(description or tr("Pobieranie: ") + source.label, QgsTask.Flag.CanCancel)
         self.source = source
         self.queries = [q if isinstance(q, Query) else Query(q) for q in queries]
         self.attributes = attributes if source.attribute_selection else None
@@ -135,7 +135,8 @@ class WfsDownloadTask(QgsTask):
                 flt = query.filter_xml if (depth == 0 and exact) else self._tile_filter(query, rect)
                 return self.client.page(flt, start, count, self.attributes)
             fetcher = TileFetcher(request, self.isCanceled, on_total,
-                                  lambda got: self._report(qi, n, got, total["n"]), self.source.label)
+                                  lambda got: self._report(qi, n, got, total["n"]), self.source.label,
+                                  hits=lambda: self.client.hits(query.filter_xml))
             out = fetcher.fetch(query.rect, query.clip_geom)
             if fetcher.stopped:
                 self.result.canceled = True
@@ -250,7 +251,7 @@ class BoundaryTask(QgsTask):
     done = pyqtSignal(object)
 
     def __init__(self, teryt: str):
-        super().__init__(f"Granica PRG: {teryt}", QgsTask.Flag.CanCancel)
+        super().__init__(tr("Granica PRG: ") + teryt, QgsTask.Flag.CanCancel)
         from ..prg_client import PRGClient
         self.teryt = teryt
         self.client = PRGClient()
@@ -277,7 +278,7 @@ class SkorowidzSearchTask(QgsTask):
     done = pyqtSignal(list, list)
 
     def __init__(self, url: str, layer_names: list, geom: QgsGeometry):
-        super().__init__("Wyszukiwanie w skorowidzu…", QgsTask.Flag.CanCancel)
+        super().__init__(tr("Wyszukiwanie w skorowidzu…"), QgsTask.Flag.CanCancel)
         from ..wfs_index_client import WFSIndexClient
         self.client = WFSIndexClient(url)
         self.layer_names = list(layer_names)
@@ -314,7 +315,7 @@ class RegionsTask(QgsTask):
     done = pyqtSignal(str, list, list)
 
     def __init__(self, key: str, jednostki: list):
-        super().__init__(f"PD_GUGiK – obręby {key}", QgsTask.Flag.CanCancel)
+        super().__init__(tr("Obręby: ") + key, QgsTask.Flag.CanCancel)
         self.key = key
         self.jednostki = jednostki
         self.session = net.make_session()

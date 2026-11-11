@@ -36,10 +36,11 @@ class WfsClient:
         """Liczba pasujących obiektów (numberMatched); -1 gdy serwer jej nie podaje."""
         params = {
             "service": "WFS", "version": "2.0.0", "request": "GetFeature",
-            "typeNames": self.typename, "startIndex": "0", "count": "100",
-            "filter": filter_xml.strip(),
+            "typeNames": self.typename, "resultType": "hits",
         }
-        resp = net.get(self.session, self.url, params, timeout=60)
+        if filter_xml and filter_xml.strip():
+            params["filter"] = filter_xml.strip()
+        resp = net.get(self.session, self.url, params, timeout=120)
         root = ET.fromstring(resp.content)  # nosec
         matched = root.get("numberMatched", "unknown")
         if matched == "unknown":

@@ -40,13 +40,20 @@ class FakeWfs:
     """
 
     def __init__(self, total: int = 1005, fail_filters=(), exception_filters=(), max_count=None,
-                 spatial=False, unstable=False, reject_intersects=False):
+                 spatial=False, unstable=False, reject_intersects=False, unknown_matched=False,
+                 hits=True, ignore_start=False):
         """
         `spatial`: filtr BBOX/Intersects naprawdę wybiera działki w zasięgu (prostokąt otaczający).
         `unstable`: każda odpowiedź w innej kolejności – stronicowanie gubi obiekty
                     (jak serwer bez stałego sortowania).
         `reject_intersects`: fes:Intersects → ExceptionReport (usługa bez obsługi wielokąta).
+        `unknown_matched`: numberMatched="unknown" jak MapServer usług zbiorczych EGiB i RCN;
+                    `hits` – czy resultType=hits podaje wtedy liczbę.
+        `ignore_start`: serwer ignoruje startIndex (zawsze pierwsza strona).
         """
+        self.unknown_matched = unknown_matched
+        self.hits = hits
+        self.ignore_start = ignore_start
         self.spatial = spatial
         self.unstable = unstable
         self.reject_intersects = reject_intersects
@@ -98,8 +105,14 @@ class FakeWfs:
                             and _y(i) <= y1 and _y(i) + 10 >= y0]
                 if outer.unstable:
                     random.shuffle(pool)
-                ids = pool[start:start + count]
-                body = HEADER.format(matched=len(pool), returned=len(ids)) + \
+                if outer.ignore_start:
+                    start = 0
+                if q.get("resultType") == "hits":
+                    ids, matched = [], len(pool) if outer.hits or not outer.unknown_matched else "unknown"
+                else:
+                    ids = pool[start:start + count]
+                    matched = "unknown" if outer.unknown_matched else len(pool)
+                body = HEADER.format(matched=matched, returned=len(ids)) + \
                     "".join(parcel(i) for i in ids) + "</wfs:FeatureCollection>"
                 data = body.encode("utf-8")
                 self.send_response(200)

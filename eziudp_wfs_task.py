@@ -414,9 +414,10 @@ class EziudpWfsTask(QgsTask):
         scope_text: str = "",
         powiat_rects: Optional[dict] = None,
     ):
-        labels = [AVAILABLE_LAYERS_BY_KEY[k]["label"] for k in layer_keys
+        labels = [tr(AVAILABLE_LAYERS_BY_KEY[k]["label"]) for k in layer_keys
                   if k in AVAILABLE_LAYERS_BY_KEY]
-        super().__init__(f"PD_GUGiK – EZiUDP: {', '.join(labels)} ({len(teryt_list)} pow.)",
+        super().__init__(tr("Usługi powiatowe: ") + f"{', '.join(labels)} · " + tr("powiatów: ")
+                         + str(len(teryt_list)),
                          QgsTask.Flag.CanCancel)
         self.teryt_list = [str(t).strip() for t in teryt_list if str(t).strip()]
         self.layer_keys = [k for k in layer_keys if k in AVAILABLE_LAYERS_BY_KEY]
@@ -578,8 +579,9 @@ class EziudpWfsTask(QgsTask):
                 base_url, wfs_layer_name, rect, self._clip_geom, teryt, wfs_url,
                 self.isCanceled, self._progress(self._count))
             version = "2.0.0 (kafle)"
-            if not features and self._bbox_rect is not None and not self.isCanceled():
+            if not features and rect is not None and not self.isCanceled():
                 # pusty zakres bywa skutkiem innej kolejności osi BBOX – sprawdza dostawca QGIS
+                # (także dla całego powiatu: tam BBOX to prostokąt powiatu)
                 QgsMessageLog.logMessage(
                     f"[EziudpWfsTask] TERYT {teryt} '{wfs_layer_name}': 0 obiektów w zakresie – "
                     f"sprawdzam dostawcą WFS QGIS.", LOG_TAG, Qgis.MessageLevel.Info)

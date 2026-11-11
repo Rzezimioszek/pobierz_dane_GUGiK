@@ -8,7 +8,7 @@ qgisMinimumVersion=3.40
 qgisMaximumVersion=4.99
 supportsQt6=True
 description=Pobieranie danych z usług GUGiK: EGiB, RCN, PRG, PRNG, pliki ze skorowidzów (ortofotomapa, LIDAR, NMT/NMPT) i powiatowe WFS z EZiUDP. Download data from Polish GUGiK services (cadastre, real estate prices, boundaries, place names, sheet indexes).
-version=1.9.16
+version=1.9.17
 author=Główny Urząd Geodezji i Kartografii (GUGiK) - Łukasz Świątek
 email=uslugi.iip@gugik.gov.pl
 
@@ -27,6 +27,14 @@ repository=https://github.com/GlownyUrzadGeodezjiIKartografii/pobierz_dane_GUGiK
 hasProcessingProvider=yes
 # Uncomment the following line and add your changelog:
 changelog=
+	1.9.17
+		- poprawka: luki w działkach i budynkach EGiB/RCN – usługi zbiorcze (MapServer) nie podają liczby obiektów (numberMatched="unknown"), więc kafle z 1.9.14 się nie włączały i zostawało stronicowanie; teraz pełna strona bez liczby też dzieli zakres na kafle
+		- poprawka: ostrzeżenie o dużym pobraniu i postęp w procentach działają też dla EGiB/RCN (liczba z zapytania resultType=hits)
+		- poprawka: pobieranie nie zawiesza się na usłudze, która ignoruje startIndex i nie podaje liczby obiektów
+		- poprawka: usługi powiatowe – cały powiat, który w kaflach dał 0 obiektów (np. inna kolejność osi), jest ponawiany dostawcą WFS QGIS jak przed 1.9.15
+		- usługi powiatowe dla całego województwa pytają przed startem (wszystkie powiaty pobierane w całości)
+		- język: gdy w QGIS wyłączone jest „Zastąp ustawienia regionalne”, wtyczka idzie za językiem systemu jak QGIS; nazwy zadań w menedżerze zadań QGIS przetłumaczone
+		- słownik jednostek z PRG z 10.11.2026: 3227 jednostek ewidencyjnych, 54 268 obrębów (22 nowe, 3 usunięte, aktualne nazwy)
 	1.9.16
 		- angielska wersja interfejsu: panel, lista jednostek (województwo/powiat/gmina/obręb), usługi powiatowe, okno skorowidzów, komunikaty błędów i algorytmy Processing; język według ustawień QGIS (każdy inny niż polski dostaje angielski)
 		- wyłączenie wtyczki zdejmuje też jej tłumaczenie

@@ -50,6 +50,11 @@ def start(dock, sel, scope, out) -> None:
         teryt = scope.teryt
         if len(teryt) == 2:
             teryts = sorted(t for t in dock.units.powiaty if t.startswith(teryt))
+            # całe województwo z usług powiatowych to godziny pobierania – bez pytania tylko jeden powiat
+            if len(teryts) > 1 and not dock.ask(
+                    tr("Województwo to {0} powiatów pobieranych w całości z ich usług – może to trwać "
+                       "bardzo długo i zająć dużo pamięci. Kontynuować?").format(len(teryts))):
+                return
             launch(dock, keys, teryts, None, None, out, scope.describe())
         elif len(teryt) == 4:
             launch(dock, keys, [teryt], None, None, out, scope.describe())

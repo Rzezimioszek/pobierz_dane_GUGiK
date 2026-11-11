@@ -33,10 +33,16 @@ class TileFetcher:
     on_total(n)     – liczba obiektów całego zakresu z pierwszej odpowiedzi
                       (może zgłosić wyjątek, np. „za dużo”)
     on_progress(n)  – łączna liczba pobranych obiektów
+    hits()          -> liczba obiektów całego zakresu (resultType=hits) – pytana tylko, gdy
+                      zwykła odpowiedź jej nie podaje (MapServer: numberMatched="unknown")
+
+    Serwer bez numberMatched (usługi zbiorcze EGiB i RCN): pełna strona znaczy
+    „może być więcej” – kafel dzielimy tak samo, jak przy znanej liczbie.
     """
 
     def __init__(self, request: Callable, canceled: Callable, on_total: Optional[Callable] = None,
-                 on_progress: Optional[Callable] = None, label: str = "", page_size: int = PAGE_SIZE):
+                 on_progress: Optional[Callable] = None, label: str = "", page_size: int = PAGE_SIZE,
+                 hits: Optional[Callable] = None):
         self.request = request
         self.canceled = canceled
         self.on_total = on_total
@@ -44,9 +50,11 @@ class TileFetcher:
         self.label = label
         self.page_size = page_size
         self.stopped = False
+        self.hits = hits
         self.got = 0
         self.requests = 0
         self._seen = set()
+        self._counts = None     # None – nie wiadomo jeszcze, czy serwer podaje numberMatched
 
     def fetch(self, rect: Optional[QgsRectangle], area: Optional[QgsGeometry] = None) -> list:
         """Wszystkie obiekty zakresu (bez powtórzeń); `area` pozwala pominąć kafle poza zakresem."""
@@ -73,7 +81,13 @@ class TileFetcher:
             self.on_progress(self.got)
         return out
 
-    def _total(self, matched: int) -> None:
+    def _total(self, matched: int, ask: bool = True) -> None:
+        if matched < 0 and ask and self.hits is not None:
+            try:
+                matched = self.hits()
+            except Exception as exc:     # liczba tylko do postępu i ostrzeżenia – nie przerywa
+                log.info(f"[Pobieranie] {self.label}: liczba obiektów niedostępna ({exc})")
+                matched = -1
         if self.on_total:
             self.on_total(matched)
 
@@ -83,20 +97,24 @@ class TileFetcher:
             return []
         can_split = rect is not None and depth < MAX_TILE_DEPTH \
             and rect.width() > MIN_TILE and rect.height() > MIN_TILE
-        if can_split:
+        totaled = False
+        if can_split and self._counts is not False:
             # liczba obiektów z małego zapytania (1 obiekt) – bez pobierania pełnej strony
             matched = gml.number_matched(self._page(rect, depth, 0, 1))
+            self._counts = matched >= 0
             if depth == 0:
                 self._total(matched)
+                totaled = True
             if matched > self.page_size:
                 return self._split(rect, depth)
         text = self._page(rect, depth, 0, self.page_size)
         page = gml.parse_features(text)
         matched = gml.number_matched(text)
-        if depth == 0 and not can_split:
-            self._total(matched)
-        if can_split and matched > len(page):
-            # serwer oddaje mniej niż page_size na stronę – też dzielimy
+        if depth == 0 and not totaled:
+            # bez prostokąta (np. lista ID) to i tak jedna strona – bez dodatkowego zapytania o liczbę
+            self._total(matched, ask=can_split)
+        if can_split and (matched > len(page) or (matched < 0 and len(page) >= self.page_size)):
+            # więcej obiektów niż na stronie (albo pełna strona bez liczby) – dzielimy
             return self._split(rect, depth)
         features = self._keep(page)
         if (matched >= 0 and len(page) < matched) or (matched < 0 and len(page) >= self.page_size):
@@ -125,9 +143,11 @@ class TileFetcher:
             text = self._page(rect, depth, start, self.page_size)
             page = gml.parse_features(text)
             matched = gml.number_matched(text) if matched < 0 else matched
-            features.extend(self._keep(page))
+            kept = self._keep(page)
+            features.extend(kept)
             got = start + len(page)
-            if not page:
+            if not page or not kept:
+                # pusta strona albo same powtórki (serwer ignoruje startIndex) – koniec
                 break
             if matched >= 0:
                 # serwer może oddawać mniej niż page_size na stronę – liczy się numberMatched

@@ -25,7 +25,7 @@
     </message>
     <message>
         <location filename="../ui/dock.py" line="630"/>
-        <location filename="../ui/eziudp.py" line="142"/>
+        <location filename="../ui/eziudp.py" line="147"/>
         <source> (ponowienie)</source>
         <translation> (retry)</translation>
     </message>
@@ -96,7 +96,7 @@
         <translation> features – the download will take long and use a lot of memory.</translation>
     </message>
     <message>
-        <location filename="../ui/eziudp.py" line="126"/>
+        <location filename="../ui/eziudp.py" line="131"/>
         <source> obiektów → </source>
         <translation> features → </translation>
     </message>
@@ -146,7 +146,7 @@
         <translation> – it will be used without checking.</translation>
     </message>
     <message>
-        <location filename="../pobierz_dane_GUGiK.py" line="68"/>
+        <location filename="../pobierz_dane_GUGiK.py" line="76"/>
         <source>&amp;Pobierz dane GUGiK</source>
         <translation>&amp;Pobierz dane GUGiK</translation>
     </message>
@@ -175,7 +175,7 @@
         <translation>. A new cadastral district? Type its code, e.g. 146501_1.0001.</translation>
     </message>
     <message>
-        <location filename="../ui/eziudp.py" line="134"/>
+        <location filename="../ui/eziudp.py" line="139"/>
         <source>1 problem: </source>
         <translation>1 problem: </translation>
     </message>
@@ -231,7 +231,7 @@
     </message>
     <message>
         <location filename="../ui/dock.py" line="616"/>
-        <location filename="../ui/eziudp.py" line="132"/>
+        <location filename="../ui/eziudp.py" line="137"/>
         <source>Brak obiektów w tym zakresie.</source>
         <translation>No features in this scope.</translation>
     </message>
@@ -402,6 +402,7 @@
         <translation>Ready: </translation>
     </message>
     <message>
+        <location filename="../core/tasks.py" line="254"/>
         <location filename="../ui/dock.py" line="362"/>
         <source>Granica PRG: </source>
         <translation>PRG boundary: </translation>
@@ -567,7 +568,7 @@ You can use * and ? as wildcards.</translation>
         <translation>Cannot create layer {0} in {1}: {2}</translation>
     </message>
     <message>
-        <location filename="../ui/eziudp.py" line="128"/>
+        <location filename="../ui/eziudp.py" line="133"/>
         <source>Nie pobrano danych</source>
         <translation>No data downloaded</translation>
     </message>
@@ -593,7 +594,7 @@ You can use * and ? as wildcards.</translation>
     </message>
     <message>
         <location filename="../ui/dock.py" line="468"/>
-        <location filename="../ui/eziudp.py" line="90"/>
+        <location filename="../ui/eziudp.py" line="95"/>
         <source>Nie udało się pobrać granicy jednostki z PRG.</source>
         <translation>Could not get the unit boundary from PRG.</translation>
     </message>
@@ -703,6 +704,11 @@ You can use * and ? as wildcards.</translation>
         <translation>Districts from the dictionary </translation>
     </message>
     <message>
+        <location filename="../core/tasks.py" line="318"/>
+        <source>Obręby: </source>
+        <translation>Districts: </translation>
+    </message>
+    <message>
         <location filename="../ui/widgets.py" line="810"/>
         <source>Obrębów o tej nazwie: </source>
         <translation>Districts with this name: </translation>
@@ -804,7 +810,7 @@ You can use * and ? as wildcards.</translation>
         <translation>Downloads features from a GUGiK WFS service for a voivodeship (2 digits), county (4), municipality (7, e.g. 1465011) or cadastral district (e.g. 146501_1.0001). The unit boundary comes from PRG. For whole voivodeships of EGiB and RCN it is better to use the opendata packages from the plugin panel.</translation>
     </message>
     <message>
-        <location filename="../core/tasks.py" line="200"/>
+        <location filename="../core/tasks.py" line="201"/>
         <source>Pobieranie pliku </source>
         <translation>Downloading file </translation>
     </message>
@@ -814,12 +820,17 @@ You can use * and ? as wildcards.</translation>
         <translation>WFS download</translation>
     </message>
     <message>
+        <location filename="../core/tasks.py" line="81"/>
+        <source>Pobieranie: </source>
+        <translation>Downloading: </translation>
+    </message>
+    <message>
         <location filename="../ui/dock.py" line="109"/>
         <source>Pobierz</source>
         <translation>Download</translation>
     </message>
     <message>
-        <location filename="../pobierz_dane_GUGiK.py" line="174"/>
+        <location filename="../pobierz_dane_GUGiK.py" line="182"/>
         <location filename="../ui/dock.py" line="56"/>
         <location filename="../ui/dock.py" line="196"/>
         <source>Pobierz dane GUGiK</source>
@@ -945,7 +956,7 @@ You can use * and ? as wildcards.</translation>
         <translation>Retry only the queries that failed</translation>
     </message>
     <message>
-        <location filename="../ui/eziudp.py" line="130"/>
+        <location filename="../ui/eziudp.py" line="135"/>
         <source>Powiat nie udostępnia tych warstw</source>
         <translation>The county does not provide these layers</translation>
     </message>
@@ -981,7 +992,7 @@ You can use * and ? as wildcards.</translation>
     </message>
     <message>
         <location filename="../ui/dock.py" line="612"/>
-        <location filename="../ui/eziudp.py" line="124"/>
+        <location filename="../ui/eziudp.py" line="129"/>
         <source>Przerwano. Zapisano obiektów: </source>
         <translation>Stopped. Features saved: </translation>
     </message>
@@ -1092,7 +1103,7 @@ You can use * and ? as wildcards.</translation>
         <translation>Where from</translation>
     </message>
     <message>
-        <location filename="../core/tasks.py" line="174"/>
+        <location filename="../core/tasks.py" line="175"/>
         <source>Sprawdzanie liczby obiektów…</source>
         <translation>Checking the number of features…</translation>
     </message>
@@ -1122,7 +1133,7 @@ You can use * and ? as wildcards.</translation>
         <translation>TERYT / name:</translation>
     </message>
     <message>
-        <location filename="../eziudp_wfs_task.py" line="534"/>
+        <location filename="../eziudp_wfs_task.py" line="535"/>
         <source>TERYT {0}: usługa powiatu nie udostępnia warstwy „{1}”</source>
         <translation>TERYT {0}: the county service does not provide the layer “{1}”</translation>
     </message>
@@ -1198,7 +1209,12 @@ You can use * and ? as wildcards.</translation>
         <translation>County services (EZiUDP)</translation>
     </message>
     <message>
-        <location filename="../ui/eziudp.py" line="99"/>
+        <location filename="../eziudp_wfs_task.py" line="419"/>
+        <source>Usługi powiatowe: </source>
+        <translation>County services: </translation>
+    </message>
+    <message>
+        <location filename="../ui/eziudp.py" line="104"/>
         <source>Usługi powiatowe: warstw </source>
         <translation>County services: layers </translation>
     </message>
@@ -1213,7 +1229,7 @@ You can use * and ? as wildcards.</translation>
         <translation>This scope contains </translation>
     </message>
     <message>
-        <location filename="../ui/eziudp.py" line="75"/>
+        <location filename="../ui/eziudp.py" line="80"/>
         <source>W tym zakresie nie ma żadnego powiatu.</source>
         <translation>There is no county in this scope.</translation>
     </message>
@@ -1271,6 +1287,11 @@ You can use * and ? as wildcards.</translation>
         <location filename="../ui/widgets.py" line="609"/>
         <source>Wielokąt (dowolny kształt)</source>
         <translation>Polygon (any shape)</translation>
+    </message>
+    <message>
+        <location filename="../ui/eziudp.py" line="55"/>
+        <source>Województwo to {0} powiatów pobieranych w całości z ich usług – może to trwać bardzo długo i zająć dużo pamięci. Kontynuować?</source>
+        <translation>The voivodeship has {0} counties, each downloaded in full from its own service – this can take very long and use a lot of memory. Continue?</translation>
     </message>
     <message>
         <location filename="../ui/widgets.py" line="502"/>
@@ -1354,6 +1375,11 @@ You can use * and ? as wildcards.</translation>
         <translation>Search by district and number applies to parcels – tick EGiB or RCN parcels.</translation>
     </message>
     <message>
+        <location filename="../core/tasks.py" line="281"/>
+        <source>Wyszukiwanie w skorowidzu…</source>
+        <translation>Searching the sheet index…</translation>
+    </message>
+    <message>
         <location filename="../ui/widgets.py" line="316"/>
         <source>Wyszukuje arkusze w zakresie; wybierasz je na mapie albo w tabeli i pobierasz</source>
         <translation>Finds sheets in the scope; you pick them on the map or in the table and download</translation>
@@ -1390,7 +1416,7 @@ You can use * and ? as wildcards.</translation>
         <translation>Scope = what is visible on the map now.</translation>
     </message>
     <message>
-        <location filename="../ui/eziudp.py" line="71"/>
+        <location filename="../ui/eziudp.py" line="76"/>
         <source>Zakres jest pusty.</source>
         <translation>The scope is empty.</translation>
     </message>
@@ -1400,7 +1426,7 @@ You can use * and ? as wildcards.</translation>
         <translation>Close</translation>
     </message>
     <message>
-        <location filename="../eziudp_wfs_task.py" line="472"/>
+        <location filename="../eziudp_wfs_task.py" line="473"/>
         <source>Zapis warstwy {0} nie powiódł się: {1}</source>
         <translation>Saving layer {0} failed: {1}</translation>
     </message>
@@ -1560,7 +1586,7 @@ You can use * and ? as wildcards.</translation>
         <translation>approx. </translation>
     </message>
     <message>
-        <location filename="../ui/eziudp.py" line="135"/>
+        <location filename="../ui/eziudp.py" line="140"/>
         <source>pierwszy: </source>
         <translation>first: </translation>
     </message>
@@ -1575,7 +1601,7 @@ You can use * and ? as wildcards.</translation>
         <translation>features downloaded: </translation>
     </message>
     <message>
-        <location filename="../ui/eziudp.py" line="137"/>
+        <location filename="../ui/eziudp.py" line="142"/>
         <source>pominięto warstw, których powiat nie udostępnia: </source>
         <translation>layers not provided by the county skipped: </translation>
     </message>
@@ -1585,17 +1611,18 @@ You can use * and ? as wildcards.</translation>
         <translation>county</translation>
     </message>
     <message>
-        <location filename="../eziudp_wfs_task.py" line="514"/>
+        <location filename="../eziudp_wfs_task.py" line="515"/>
         <source>powiat nie zgłosił usługi WFS do EZiUDP</source>
         <translation>the county has not registered a WFS service in EZiUDP</translation>
     </message>
     <message>
-        <location filename="../ui/eziudp.py" line="100"/>
+        <location filename="../eziudp_wfs_task.py" line="419"/>
+        <location filename="../ui/eziudp.py" line="105"/>
         <source>powiatów: </source>
         <translation>counties: </translation>
     </message>
     <message>
-        <location filename="../ui/eziudp.py" line="135"/>
+        <location filename="../ui/eziudp.py" line="140"/>
         <source>problemów: </source>
         <translation>problems: </translation>
     </message>
@@ -1616,7 +1643,7 @@ You can use * and ? as wildcards.</translation>
         <translation>temporary</translation>
     </message>
     <message>
-        <location filename="../eziudp_wfs_task.py" line="629"/>
+        <location filename="../eziudp_wfs_task.py" line="631"/>
         <source>usługa nie odpowiada jak WFS 2.0 ani 1.1</source>
         <translation>the service responds neither as WFS 2.0 nor 1.1</translation>
     </message>

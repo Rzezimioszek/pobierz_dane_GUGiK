@@ -51,7 +51,12 @@ class PD_GUGiK:
 
         # initialize locale
         # Język z ustawień QGIS; gdy wpisu brak (świeży profil) – język systemu
-        locale = (QSettings().value('locale/userLocale', '', type=str)
+        # Gdy w QGIS nie zaznaczono „Zastąp ustawienia regionalne”, interfejs jest w języku
+        # systemu, a locale/userLocale może zostać po dawnym wyborze – wtedy liczy się system.
+        s = QSettings()
+        override = s.value('locale/overrideFlag', None)
+        use_saved = override is None or str(override).lower() in ('true', '1')
+        locale = ((s.value('locale/userLocale', '', type=str) if use_saved else '')
                   or QLocale().name())[0:2]
         locale_path = os.path.join(self.plugin_dir, 'i18n', 'PD_GUGiK_{}.qm'.format(locale))
         if locale != 'pl' and not os.path.exists(locale_path):

@@ -83,3 +83,28 @@ def test_other_languages_get_english_and_unload_removes_translator():
         plugin.unload()
     finally:
         QSettings().setValue("locale/userLocale", "pl")
+
+
+def test_system_language_wins_when_qgis_does_not_override():
+    """„Zastąp ustawienia regionalne” wyłączone: stary wpis locale/userLocale nie decyduje."""
+    from qgis.PyQt.QtCore import QLocale, QSettings
+    from test_dock_smoke import _PluginIface
+    main = importlib.import_module(f"{PLUGIN_NAME}.pobierz_dane_GUGiK")
+    i18n = importlib.import_module(f"{PLUGIN_NAME}.core.i18n")
+    s = QSettings()
+    saved = QLocale()
+    try:
+        QLocale.setDefault(QLocale("pl_PL"))
+        s.setValue("locale/userLocale", "en_US")
+        s.setValue("locale/overrideFlag", False)
+        plugin = main.PD_GUGiK(_PluginIface())
+        assert plugin.translator is None and i18n.tr("Pobierz") == "Pobierz"
+        plugin.unload()
+        s.setValue("locale/overrideFlag", True)
+        plugin = main.PD_GUGiK(_PluginIface())
+        assert i18n.tr("Pobierz") == "Download"
+        plugin.unload()
+    finally:
+        QLocale.setDefault(saved)
+        s.remove("locale/overrideFlag")
+        s.setValue("locale/userLocale", "pl")
