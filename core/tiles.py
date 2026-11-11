@@ -16,6 +16,7 @@ from . import gml, log
 PAGE_SIZE = 1000
 MAX_TILE_DEPTH = 10      # 4^10 kafli – zakres podzielony do ok. 1/1000 boku
 MIN_TILE = 20.0          # m – mniejszych kafli nie dzielimy (gęsto zabudowany kwartał)
+MAX_TILES = 4000         # bezpiecznik: więcej kafli = coś nie tak z usługą – dalej zwykłe stronicowanie
 
 
 def quadrants(r: QgsRectangle) -> list:
@@ -33,6 +34,8 @@ class TileFetcher:
     on_total(n)     – liczba obiektów całego zakresu z pierwszej odpowiedzi
                       (może zgłosić wyjątek, np. „za dużo”)
     on_progress(n)  – łączna liczba pobranych obiektów
+    sink(features)  – nowe obiekty od razu po każdej stronie (zapis w trakcie); wtedy fetch()
+                      ich nie zbiera i zwraca pustą listę
     hits(rect, depth) -> liczba obiektów kafla (resultType=hits) albo -1; pytana tylko, gdy
                       zwykła odpowiedź liczby nie podaje (MapServer: numberMatched="unknown")
 
@@ -46,7 +49,7 @@ class TileFetcher:
 
     def __init__(self, request: Callable, canceled: Callable, on_total: Optional[Callable] = None,
                  on_progress: Optional[Callable] = None, label: str = "", page_size: int = PAGE_SIZE,
-                 hits: Optional[Callable] = None):
+                 hits: Optional[Callable] = None, sink: Optional[Callable] = None):
         self.request = request
         self.canceled = canceled
         self.on_total = on_total
@@ -55,12 +58,15 @@ class TileFetcher:
         self.page_size = page_size
         self.stopped = False
         self.hits = hits
+        self.sink = sink
         self.got = 0
         self.requests = 0
         self._seen = set()
         self._counts = None     # None – nie wiadomo jeszcze, czy serwer podaje numberMatched
         self._hits_ok = None    # None – nie wiadomo jeszcze, czy działa resultType=hits
         self.hits_used = 0      # ile kafli policzono przez resultType=hits (do dziennika i testów)
+        self.tiles = 0          # kafle po podziale
+        self.no_split = False   # usługa ignoruje BBOX albo kafli za dużo – dalej bez dzielenia
 
     def fetch(self, rect: Optional[QgsRectangle], area: Optional[QgsGeometry] = None) -> list:
         """Wszystkie obiekty zakresu (bez powtórzeń); `area` pozwala pominąć kafle poza zakresem."""
@@ -83,9 +89,11 @@ class TileFetcher:
             self._seen.add(key)
             out.append(f)
         self.got += len(out)
+        if self.sink is not None and out:
+            self.sink(out)
         if self.on_progress:
             self.on_progress(self.got)
-        return out
+        return [] if self.sink is not None else out
 
     def _total(self, matched: int) -> None:
         if self.on_total:
@@ -123,22 +131,51 @@ class TileFetcher:
             return True
         return False
 
+    def _stop_splitting(self, why: str) -> None:
+        if not self.no_split:
+            log.warning(f"[Pobieranie] {self.label}: {why} – dalej bez dzielenia na kafle "
+                        f"(stronicowanie; przy niestabilnej usłudze mogą być braki)")
+        self.no_split = True
+
+    def _ignores_bbox(self, rect, page: list) -> bool:
+        """Większość obiektów strony leży poza kaflem – usługa nie filtruje po BBOX."""
+        sample = page[:20]
+        if not sample:
+            return False
+        area = QgsRectangle(rect)
+        area.grow(1.0)
+        outside = 0
+        for f in sample:
+            g = f["geom"] if isinstance(f["geom"], QgsGeometry) else QgsGeometry.fromWkt(f["geom"])
+            if g.isNull() or not g.boundingBox().intersects(area):
+                outside += 1
+        return outside * 2 > len(sample)
+
     def _fetch(self, rect, depth: int) -> list:
         if self.canceled():
             self.stopped = True
             return []
-        can_split = rect is not None and depth < MAX_TILE_DEPTH \
+        can_split = rect is not None and depth < MAX_TILE_DEPTH and not self.no_split \
             and rect.width() > MIN_TILE and rect.height() > MIN_TILE
         known = -1                     # liczba obiektów kafla, jeśli usługa ją zna
+        probe = []
         if can_split and self._counts is not False:
             # liczba obiektów z małego zapytania (1 obiekt) – bez pobierania pełnej strony
-            known = gml.number_matched(self._page(rect, depth, 0, 1))
+            text = self._page(rect, depth, 0, 1)
+            known = gml.number_matched(text)
+            probe = gml.parse_features(text) if depth == 0 else []
             self._counts = known >= 0
         hits = -1
         if can_split and known < 0:
             hits = known = self._count_hits(rect, depth)
         if depth == 0 and can_split:
             self._total(known)
+        if can_split and known > self.page_size and depth == 0:
+            # raz, przed pierwszym podziałem: czy usługa w ogóle filtruje po prostokącie
+            sample = probe or gml.parse_features(self._page(rect, depth, 0, 20))
+            if self._ignores_bbox(rect, sample):
+                self._stop_splitting("usługa oddaje obiekty spoza zakresu (ignoruje BBOX)")
+                can_split = False
         if can_split and known > self.page_size:
             return self._split(rect, depth)
         text = self._page(rect, depth, 0, self.page_size)
@@ -149,8 +186,11 @@ class TileFetcher:
         if matched < 0 and not self._hits_wrong(hits, page):
             matched = known
         if can_split and (matched > len(page) or len(page) >= self.page_size):
-            # więcej obiektów niż na stronie (limit serwera) albo pełna strona – dzielimy
-            return self._split(rect, depth)
+            if self._ignores_bbox(rect, page):
+                self._stop_splitting("usługa oddaje obiekty spoza kafla (ignoruje BBOX)")
+            else:
+                # więcej obiektów niż na stronie (limit serwera) albo pełna strona – dzielimy
+                return self._split(rect, depth)
         features = self._keep(page)
         if (matched >= 0 and len(page) < matched) or (matched < 0 and len(page) >= self.page_size):
             features += self._page_rest(rect, depth, len(page), matched)
@@ -163,6 +203,9 @@ class TileFetcher:
         for quad in quadrants(rect):
             if self._area is not None and not self._area.intersects(QgsGeometry.fromRect(quad)):
                 continue        # ćwiartka poza zakresem (np. wielokąt w kształcie litery L)
+            self.tiles += 1
+            if self.tiles > MAX_TILES:
+                self._stop_splitting(f"ponad {MAX_TILES} kafli")
             out += self._fetch(quad, depth + 1)
             if self.stopped:
                 break
@@ -178,10 +221,10 @@ class TileFetcher:
             text = self._page(rect, depth, start, self.page_size)
             page = gml.parse_features(text)
             matched = gml.number_matched(text) if matched < 0 else matched
-            kept = self._keep(page)
-            features.extend(kept)
+            before = self.got
+            features.extend(self._keep(page))
             got = start + len(page)
-            if not page or not kept:
+            if not page or self.got == before:
                 # pusta strona albo same powtórki (serwer ignoruje startIndex) – koniec
                 break
             if matched >= 0:

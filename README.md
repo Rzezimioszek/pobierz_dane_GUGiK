@@ -59,7 +59,7 @@ Kroki zwijają się kliknięciem w nagłówek. Zwinięty krok pokazuje skrót wy
 
 ### Zadania
 
-Pod przyciskiem **Pobierz** widać postęp każdego zadania i liczbę pobranych obiektów. Zadanie można anulować. Gdy część zapytań się nie powiedzie, przycisk **Ponów** powtarza tylko je. Komunikaty błędów mówią, co się stało i co zrobić (limit czasu, błąd serwera, proxy, certyfikat). Szczegóły są w *Dzienniku komunikatów*, zakładka **PD_GUGiK**.
+Pod przyciskiem **Pobierz** widać postęp każdego zadania i liczbę pobranych obiektów. Obiekty pojawiają się na mapie już w trakcie pobierania (porcjami co kilka sekund). Zadanie można anulować – to, co już pobrano, zostaje w warstwie. Gdy część zapytań się nie powiedzie, przycisk **Ponów** powtarza tylko je. Komunikaty błędów mówią, co się stało i co zrobić (limit czasu, błąd serwera, proxy, certyfikat). Szczegóły są w *Dzienniku komunikatów*, zakładka **PD_GUGiK**.
 
 ## Skorowidze: ortofotomapa, LIDAR, NMT
 

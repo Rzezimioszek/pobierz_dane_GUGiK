@@ -9,6 +9,7 @@ Zadania w tle. Cała praca sieciowa wtyczki odbywa się tutaj, nigdy w wątku in
 """
 import contextlib
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -51,7 +52,16 @@ class DownloadResult:
     failed: list = field(default_factory=list)   # zapytania (Query) do ponowienia
     canceled: bool = False
     too_large: int = 0      # > 0: wstrzymano – tyle obiektów zgłosił serwer (ponad size_limit)
+    too_large_at: int = 0   # numer zapytania, przy którym wstrzymano (wcześniejsze już zapisane)
     prepared: object = None  # layers.Prepared – obiekty przygotowane w tle do zapisu
+    count: int = 0          # wszystkie pobrane obiekty (także te oddane porcjami w trakcie)
+
+
+@dataclass
+class Batch:
+    """Porcja obiektów do dopisania w trakcie pobierania (sygnał batch_ready)."""
+    features: list
+    prepared: object = None
 
 
 class TooLarge(Exception):
@@ -72,12 +82,19 @@ class WfsDownloadTask(QgsTask):
     `size_limit` – gdy serwer zgłosi w zapytaniu więcej obiektów (numberMatched),
     zadanie staje od razu po pierwszej stronie z `result.too_large`; pytanie
     „pobrać mimo to?” zadaje interfejs i uruchamia zadanie ponownie bez limitu.
+
+    `stream=True` – obiekty idą porcjami w trakcie (`batch_ready(Batch)`): pierwsza od
+    razu, kolejne co FLUSH_SECONDS; `result.features` zostaje wtedy puste. Bez tego
+    (algorytmy Processing) – wszystko w `result` na końcu.
     """
     done = pyqtSignal(object)
     count_changed = pyqtSignal(int)
+    batch_ready = pyqtSignal(object)
+
+    FLUSH_SECONDS = 2.0
 
     def __init__(self, source: Source, queries: list, attributes: Optional[list] = None,
-                 expected: int = 0, description: str = "", size_limit: int = 0):
+                 expected: int = 0, description: str = "", size_limit: int = 0, stream: bool = False):
         super().__init__(description or tr("Pobieranie: ") + source.label, QgsTask.Flag.CanCancel)
         self.source = source
         self.queries = [q if isinstance(q, Query) else Query(q) for q in queries]
@@ -86,17 +103,53 @@ class WfsDownloadTask(QgsTask):
         self.size_limit = size_limit
         self.result = DownloadResult()
         self.client = WfsClient(source.url, source.typename, source.geom_field)
+        self.stream = stream
+        self._buffer = []
+        self._flushed_at = None     # None – jeszcze żadnej porcji (pierwsza idzie od razu)
+        self._schema = None         # schemat z pierwszej porcji – ten sam dla kolejnych
+        self._prev = 0              # obiekty z zakończonych zapytań (do licznika)
+
+    # ------------------------------------------------------------------ porcje w trakcie
+
+    def _prepare(self, features: list):
+        if self.source.split_lines_polygons:
+            return None
+        try:
+            prepared = layers.prepare(features, self.source.geom_type, self.source.numeric_fields,
+                                      self.source.unique_field, self.source.label, fields=self._schema)
+        except Exception as exc:   # zapis i tak zbuduje obiekty sam
+            log.warning(f"[Pobieranie] {self.source.label}: przygotowanie w tle nieudane: {exc}")
+            return None
+        if self._schema is None:
+            self._schema = prepared.fields
+        return prepared
+
+    def _flush(self, force: bool = False) -> None:
+        if not self._buffer:
+            return
+        now = time.monotonic()
+        if not force and self._flushed_at is not None and now - self._flushed_at < self.FLUSH_SECONDS:
+            return
+        batch, self._buffer = self._buffer, []
+        self._flushed_at = now
+        self.batch_ready.emit(Batch(batch, self._prepare(batch)))
 
     def run(self) -> bool:
         n = len(self.queries)
         for qi, query in enumerate(self.queries):
             if self.isCanceled():
                 self.result.canceled = True
+                if self.stream:
+                    self._flush(force=True)   # pobrane do tej chwili obiekty zostają na mapie
                 return False
             try:
-                self.result.features.extend(self._run_query(query, qi, n))
+                got = self._run_query(query, qi, n)
+                self.result.features.extend(got)
+                self.result.count += len(got)
             except TooLarge as big:
+                self._flush(force=True)       # to, co już pobrano z wcześniejszych zapytań
                 self.result.too_large = big.matched
+                self.result.too_large_at = qi
                 self.result.features = []
                 return True
             except Exception as exc:  # sieć, serwer, XML – zapisz i jedź dalej
@@ -104,7 +157,9 @@ class WfsDownloadTask(QgsTask):
                 log.warning(f"[Pobieranie] {self.source.label}, {label}: {exc}")
                 self.result.errors.append((label, net.friendly(exc)))
                 self.result.failed.append(query)
-        if self.result.features and not self.source.split_lines_polygons and not self.isCanceled():
+        if self.stream:
+            self._flush(force=True)       # także po anulowaniu – pobrane już obiekty zostają
+        elif self.result.features and not self.source.split_lines_polygons and not self.isCanceled():
             # budowa QgsFeature tutaj, w tle – w głównym wątku zostaje samo dodanie do warstwy
             try:
                 self.result.prepared = layers.prepare(
@@ -139,12 +194,20 @@ class WfsDownloadTask(QgsTask):
 
             def hits(rect, depth):
                 return self.client.hits(flt(rect, depth))
+
+            def sink(features):
+                # przycięcie do zakresu od razu, żeby na mapę trafiało tylko to, co zostanie
+                kept = layers.clip(features, query.clip_geom)
+                self._buffer.extend(kept)
+                self.result.count += len(kept)
+                self._flush()
             fetcher = TileFetcher(request, self.isCanceled, on_total,
                                   lambda got: self._report(qi, n, got, total["n"]), self.source.label,
-                                  hits=hits)
+                                  hits=hits, sink=sink if self.stream else None)
             out = fetcher.fetch(query.rect, query.clip_geom)
             if fetcher.stopped:
                 self.result.canceled = True
+            self._prev += fetcher.got
             return out
 
         try:
@@ -159,7 +222,7 @@ class WfsDownloadTask(QgsTask):
         return layers.clip(features, query.clip_geom)
 
     def _report(self, qi: int, n: int, done_in_query: int, matched: int = -1) -> None:
-        self.count_changed.emit(len(self.result.features) + done_in_query)
+        self.count_changed.emit(self._prev + done_in_query)
         total = matched if matched > 0 else self.expected
         # ułamek bieżącego zapytania (z liczby zgłoszonej przez serwer) + zapytania już zakończone
         part = min(1.0, done_in_query / total) if total > 0 else (1.0 if n > 1 else 0.0)

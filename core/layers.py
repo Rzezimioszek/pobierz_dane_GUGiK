@@ -362,9 +362,13 @@ class Prepared:
 
 
 def prepare(features: list, geom_type: str, numeric: Optional[dict] = None,
-            unique_field: Optional[str] = None, label: str = "") -> Prepared:
-    """Schemat + QgsFeature z pobranych obiektów; bez warstwy i projektu (bezpieczne w tle)."""
-    fields = _schema(features, numeric)
+            unique_field: Optional[str] = None, label: str = "",
+            fields: Optional[QgsFields] = None) -> Prepared:
+    """
+    Schemat + QgsFeature z pobranych obiektów; bez warstwy i projektu (bezpieczne w tle).
+    `fields` – schemat ustalony przy pierwszej porcji (kolejne porcje tego samego pobrania).
+    """
+    fields = fields if fields is not None else _schema(features, numeric)
     is_multi = QgsWkbTypes.isMultiType(QgsWkbTypes.parseType(geom_type))
     out = make_features(features, fields, is_multi, unique_field, label=label)
     idx = fields.indexOf(unique_field) if unique_field else -1
@@ -387,7 +391,8 @@ def write(features: list, layer_name: str, geom_type: str,
           load_style: bool = True, project: QgsProject = None,
           numeric: Optional[dict] = None, fields: Optional[QgsFields] = None,
           gpkg_path: Optional[str] = None, info: Optional[dict] = None,
-          group: str = "", prepared: Optional[Prepared] = None) -> Optional[QgsVectorLayer]:
+          group: str = "", prepared: Optional[Prepared] = None,
+          seen: Optional[set] = None, added: Optional[dict] = None) -> Optional[QgsVectorLayer]:
     """
     Dopisuje obiekty do warstwy `layer_name` (tworzy ją, gdy jej nie ma):
     tymczasowej albo w pliku `gpkg_path`.
@@ -400,6 +405,11 @@ def write(features: list, layer_name: str, geom_type: str,
     group     – podgrupa w grupie „GUGiK” dla nowej warstwy (prefiks projektu)
     prepared  – obiekty przygotowane w tle (prepare); używane, gdy schemat warstwy
                 się zgadza – inaczej obiekty są budowane tutaj z `features`
+    seen      – wartości `unique_field` już w warstwie, trzymane przez kolejne porcje jednego
+                pobrania (StreamWriter) – wtedy warstwa nie jest czytana przy każdej porcji;
+                uzupełniane o dodane obiekty
+    added     – {nazwa warstwy: liczba} – licznik dodanych; podany = bez wpisu w metadanych
+                (wpis robi StreamWriter.finish raz na całe pobranie)
     Obiekty o wartości `unique_field` już obecnej w warstwie są pomijane.
     Zwraca warstwę albo None, gdy nie było czego zapisać.
     """
@@ -408,17 +418,18 @@ def write(features: list, layer_name: str, geom_type: str,
     project = project or QgsProject.instance()
 
     vl = _find_layer(project, layer_name, gpkg_path)
-    seen = set()
+    scan = seen is None
+    seen = set() if seen is None else seen
     if vl is not None:
-        if unique_field and vl.fields().indexOf(unique_field) != -1:
-            seen = {f.attribute(unique_field) for f in vl.getFeatures()}
+        if scan and unique_field and vl.fields().indexOf(unique_field) != -1:
+            seen.update(f.attribute(unique_field) for f in vl.getFeatures())
     else:
         schema = (fields if fields is not None else prepared.fields if prepared is not None
                   else _schema(features, numeric))
         if gpkg_path:
             vl = _gpkg_layer(gpkg_path, layer_name, geom_type, schema)
-            if unique_field and vl.fields().indexOf(unique_field) != -1:
-                seen = {f.attribute(unique_field) for f in vl.getFeatures()}
+            if scan and unique_field and vl.fields().indexOf(unique_field) != -1:
+                seen.update(f.attribute(unique_field) for f in vl.getFeatures())
         else:
             vl = QgsVectorLayer(f"{geom_type}?crs=epsg:2180", layer_name, "memory")
             vl.dataProvider().addAttributes(schema.toList())
@@ -431,8 +442,14 @@ def write(features: list, layer_name: str, geom_type: str,
     if prepared is not None and not pk and _same_schema(vl.fields(), prepared.fields) \
             and QgsWkbTypes.isMultiType(vl.wkbType()):
         # szybka ścieżka: obiekty gotowe z wątku roboczego, tu tylko duplikaty i dodanie
-        out = [f for f, k in zip(prepared.features, prepared.keys)
-               if k in (None, "") or k not in seen] if seen else list(prepared.features)
+        out, new_keys = [], set()
+        for f, k in zip(prepared.features, prepared.keys):
+            if k in (None, ""):
+                out.append(f)
+            elif k not in seen and k not in new_keys:
+                new_keys.add(k)
+                out.append(f)
+        seen |= new_keys
     else:
         out = make_features(features, vl.fields(), QgsWkbTypes.isMultiType(vl.wkbType()),
                             unique_field, seen, pk, layer_name)
@@ -442,7 +459,10 @@ def write(features: list, layer_name: str, geom_type: str,
             log.warning(f"[Warstwa] {layer_name}: część obiektów odrzucona przez warstwę")
         vl.updateExtents()
         vl.triggerRepaint()
-    stamp(vl, info, len(out))
+    if added is None:
+        stamp(vl, info, len(out))
+    else:
+        added[layer_name] = added.get(layer_name, 0) + len(out)
     return vl
 
 
@@ -473,6 +493,85 @@ def write_source(features: list, source: Source, output: Optional[Output] = None
     layer = write(features, name(source.layer_name), source.geom_type,
                   source.unique_field, source.style, prepared=prepared, **common)
     return [layer] if layer is not None else []
+
+
+class StreamWriter:
+    """
+    Kolejne porcje jednego pobrania do tych samych warstw – obiekty pojawiają się
+    na mapie w trakcie pobierania. Nazwy warstw (także „osobna warstwa” i prefiks)
+    ustala pierwsza porcja; ponowienie nieudanych zapytań dopisuje się do nich.
+    Wpis w metadanych: raz na pobranie (finish).
+    """
+
+    def __init__(self, source: Source, output: Optional[Output] = None, scope: str = "", tag: str = ""):
+        self.source = source
+        self.output = output or Output()
+        self.scope = scope
+        self.tag = tag
+        self.names = {}       # nazwa bazowa → nazwa warstwy
+        self.layers = {}      # nazwa warstwy → QgsVectorLayer
+        self.seen = {}        # nazwa warstwy → wartości pola unikalnego w warstwie
+        self.added = {}       # nazwa warstwy → dodane od ostatniego finish
+        self.total = 0        # wszystkie dodane obiekty
+
+    def _name(self, base: str) -> str:
+        if base not in self.names:
+            name = self.output.layer_name(base)
+            if self.output.separate:
+                name = unique_name(name, self.tag, gpkg_path=self.output.gpkg_path)
+            self.names[base] = name
+        return self.names[base]
+
+    def _write(self, features, base, geom_type, style, prepared=None) -> None:
+        if not features:
+            return
+        name = self._name(base)
+        before = self.added.get(name, 0)
+        vl = write(features, name, geom_type, self.source.unique_field, style,
+                   load_style=self.output.load_style, numeric=self.source.numeric_fields,
+                   gpkg_path=self.output.gpkg_path, group=self.output.prefix, prepared=prepared,
+                   seen=self.seen.get(name), added=self.added)
+        if vl is None:
+            return
+        if name not in self.seen:
+            # pierwsza porcja przeczytała warstwę (dopisywanie do wcześniejszego pobrania);
+            # dalej zbiór rośnie tylko o to, co dodajemy
+            idx = vl.fields().indexOf(self.source.unique_field) if self.source.unique_field else -1
+            self.seen[name] = {f.attribute(idx) for f in vl.getFeatures()} if idx >= 0 else set()
+        self.layers[name] = vl
+        self.total += self.added.get(name, 0) - before
+
+    def append(self, features: list, prepared: Optional[Prepared] = None) -> int:
+        """Dopisuje porcję; zwraca liczbę dodanych obiektów."""
+        before = self.total
+        src = self.source
+        if src.split_lines_polygons:
+            parts = split_lines_polygons(features)
+            self._write(parts["line"], f"{src.layer_name}_linie", "MultiLineString", src.style)
+            self._write(parts["polygon"], f"{src.layer_name}_poligony", "MultiPolygon", "a08_ulice_poligony")
+        else:
+            self._write(features, src.layer_name, src.geom_type, src.style, prepared)
+        return self.total - before
+
+    def written(self) -> list:
+        """Warstwy, które są nadal w projekcie."""
+        out = []
+        for vl in self.layers.values():
+            try:
+                if QgsProject.instance().mapLayer(vl.id()) is not None:
+                    out.append(vl)
+            except RuntimeError:      # warstwa usunięta przez użytkownika w trakcie
+                pass
+        return out
+
+    def finish(self) -> list:
+        """Wpis w metadanych każdej warstwy (ile dodało to pobranie); zwraca warstwy."""
+        info = {"url": self.source.url, "typename": self.source.typename, "scope": self.scope}
+        layers = self.written()
+        for vl in layers:
+            stamp(vl, info, self.added.get(vl.name(), 0))
+        self.added = {}
+        return layers
 
 
 def boundary_layer(geom: QgsGeometry, teryt: str, load_style: bool = True) -> QgsVectorLayer:

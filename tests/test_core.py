@@ -546,3 +546,77 @@ def test_polygon_filter_uses_urn_and_falls_back_to_bbox():
         assert all(poly.intersects(QgsGeometry.fromWkt(f["geom"])) for f in task.result.features)
     finally:
         srv.close()
+
+
+def test_stream_mode_sends_batches_and_keeps_processing_mode():
+    tasks, filters = mod("tasks"), mod("filters")
+    srv = FakeWfs(total=2500)
+    try:
+        src = _source(srv.url)
+        task = tasks.WfsDownloadTask(src, [filters.bbox("geom", 0, 0, 1, 1)], stream=True)
+        task.FLUSH_SECONDS = 0
+        batches = []
+        task.batch_ready.connect(batches.append)
+        task.run()
+        assert [len(b.features) for b in batches] == [1000, 1000, 500]
+        assert all(b.prepared is not None and len(b.prepared.features) == len(b.features) for b in batches)
+        assert batches[1].prepared.fields is batches[0].prepared.fields, "jeden schemat dla porcji"
+        assert task.result.features == [] and task.result.count == 2500
+        # bez stream (Processing): wszystko w wyniku, bez porcji
+        plain = tasks.WfsDownloadTask(src, [filters.bbox("geom", 0, 0, 1, 1)])
+        got = []
+        plain.batch_ready.connect(got.append)
+        plain.run()
+        assert not got and len(plain.result.features) == 2500
+        # domyślnie porcje co FLUSH_SECONDS: pierwsza od razu, reszta razem
+        task = tasks.WfsDownloadTask(src, [filters.bbox("geom", 0, 0, 1, 1)], stream=True)
+        batches = []
+        task.batch_ready.connect(batches.append)
+        task.run()
+        assert [len(b.features) for b in batches] == [1000, 1500]
+    finally:
+        srv.close()
+
+
+def test_stream_writer_appends_without_rereading_and_stamps_once():
+    from qgis.core import QgsProject
+    layers = mod("layers")
+    QgsProject.instance().removeAllMapLayers()
+    src = _source("http://x")
+    out = layers.Output(None, False, separate=True)
+    w = layers.StreamWriter(src, out, scope="test", tag="T")
+    feats = _features(60)
+    assert w.append(feats[:30]) == 30
+    assert w.append(feats[20:]) == 30, "powtórki z poprzedniej porcji pominięte"
+    layers_ = w.finish()
+    assert [lyr.name() for lyr in layers_] == ["Dzialki_T_1"] and layers_[0].featureCount() == 60
+    assert len(layers_[0].metadata().history()) == 1
+    # ponowienie tym samym zapisem: ta sama warstwa, drugi wpis w historii
+    assert w.append(_features(70)[55:]) == 10
+    assert w.finish()[0] is layers_[0] and len(layers_[0].metadata().history()) == 2
+    QgsProject.instance().removeAllMapLayers()
+
+
+def test_server_ignoring_bbox_does_not_explode_into_tiles():
+    """Usługa oddaje te same obiekty dla każdego kafla: bez bezpiecznika byłoby ok. miliona zapytań."""
+    from qgis.core import QgsGeometry
+    tasks, scope = mod("tasks"), mod("scope")
+    far = QgsGeometry.fromWkt("POLYGON((600000 500000, 610000 500000, 610000 510000, "
+                              "600000 510000, 600000 500000))")      # obiekty serwera leżą gdzie indziej
+    for server in ({"unknown_matched": True}, {"unknown_matched": True, "hits": True}, {}):
+        srv = FakeWfs(total=2500, **server)
+        try:
+            src = _source(srv.url)
+            task = tasks.WfsDownloadTask(src, [scope.rect_query(src, far, "daleko")])
+            task.run()
+        finally:
+            srv.close()
+        assert len(srv.requests) < 12, (server, len(srv.requests))
+        assert task.result.errors == []
+
+
+def test_tile_cap(monkeypatch):
+    tiles = mod("tiles")
+    monkeypatch.setattr(tiles, "MAX_TILES", 8)
+    ids, srv, _ = _hidden_count_download()
+    assert len(set(ids)) > 0 and len([r for r in srv.requests if r.get("resultType") != "hits"]) < 60

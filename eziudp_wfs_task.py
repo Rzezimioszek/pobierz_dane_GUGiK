@@ -407,11 +407,15 @@ class EziudpWfsTask(QgsTask):
 
     rect / clip_geom (EPSG:2180) – zakres z kroku 2; bez nich cały powiat.
     pairs – ponowienie: tylko wskazane (teryt, klucz warstwy).
+    names – nazwy warstw z poprzedniego pobrania (ponowienie dopisuje do tych samych
+            warstw także przy „osobnej warstwie dla każdego pobrania”).
+    Każda gotowa warstwa (powiat × typ danych) trafia na mapę od razu, nie na końcu.
     Sygnały (główny wątek): done(EziudpWfsReport), count_changed(int).
     """
 
     done = pyqtSignal(object)
     count_changed = pyqtSignal(int)
+    item_ready = pyqtSignal(object)     # wewnętrzny: warstwa gotowa w wątku roboczym → zapis
 
     def __init__(
         self,
@@ -423,6 +427,7 @@ class EziudpWfsTask(QgsTask):
         pairs: Optional[list] = None,
         scope_text: str = "",
         powiat_rects: Optional[dict] = None,
+        names: Optional[dict] = None,
     ):
         labels = [tr(AVAILABLE_LAYERS_BY_KEY[k]["label"]) for k in layer_keys
                   if k in AVAILABLE_LAYERS_BY_KEY]
@@ -435,7 +440,10 @@ class EziudpWfsTask(QgsTask):
         self.scope_text = scope_text
         # Miejsce zapisu ustalone w głównym wątku (krok 3 panelu albo ustawienia)
         self.output = output or layers.Output.from_settings()
-        self._pending: list = []   # warstwy do utworzenia w finished()
+        self._pending: list = []   # warstwy do utworzenia w finished() (gdy nie zapisano w trakcie)
+        self.names = dict(names or {})     # nazwa bazowa → nazwa warstwy w projekcie
+        # obiekt zadania żyje w głównym wątku – sygnał z run() trafia tu kolejką
+        self.item_ready.connect(self._write_item)
         self._eziudp = EziudpClient()
         self._report = EziudpWfsReport(total_teryts=len(self.teryt_list))
         self._bbox_rect = QgsRectangle(rect) if rect is not None and not rect.isEmpty() else None
@@ -462,27 +470,32 @@ class EziudpWfsTask(QgsTask):
         self.setProgress(100)
         return True
 
+    def _write_item(self, item: dict) -> None:
+        """Główny wątek: zapis jednej warstwy (powiat × typ danych) do projektu."""
+        try:
+            # Kolejne pobranie tego samego powiatu (np. inna gmina) dopisuje się
+            # do warstwy; gml_id pomija obiekty, które już w niej są.
+            first = item["features"][0]["attrs"] if item["features"] else {}
+            unique = "gml_id" if first.get("gml_id") not in (None, "") else None
+            base = item["name"]
+            if base not in self.names:
+                self.names[base] = (layers.unique_name(base, gpkg_path=self.output.gpkg_path)
+                                    if self.output.separate else base)
+            vl = layers.write(item["features"], self.names[base], item["geom_type"], unique,
+                              style=item["style"], load_style=self.output.load_style,
+                              fields=item["fields"], gpkg_path=self.output.gpkg_path,
+                              info=item.get("info"), group=self.output.prefix)
+            if vl is not None and vl not in self._report.written:
+                self._report.written.append(vl)
+        except Exception as exc:
+            msg = tr("Zapis warstwy {0} nie powiódł się: {1}").format(item['name'], exc)
+            QgsMessageLog.logMessage(f"[EziudpWfsTask] {msg}", LOG_TAG, Qgis.MessageLevel.Critical)
+            self._report.errors.append(msg)
+
     def finished(self, result: bool):
-        # Główny wątek: dopiero tu powstają warstwy w projekcie
+        # Główny wątek; warstwy zwykle zapisane już w trakcie (item_ready)
         for item in self._pending:
-            try:
-                # Kolejne pobranie tego samego powiatu (np. inna gmina) dopisuje się
-                # do warstwy; gml_id pomija obiekty, które już w niej są.
-                first = item["features"][0]["attrs"] if item["features"] else {}
-                unique = "gml_id" if first.get("gml_id") not in (None, "") else None
-                name = item["name"]
-                if self.output.separate:
-                    name = layers.unique_name(name, gpkg_path=self.output.gpkg_path)
-                vl = layers.write(item["features"], name, item["geom_type"], unique,
-                                  style=item["style"], load_style=self.output.load_style,
-                                  fields=item["fields"], gpkg_path=self.output.gpkg_path,
-                                  info=item.get("info"), group=self.output.prefix)
-                if vl is not None:
-                    self._report.written.append(vl)
-            except Exception as exc:
-                msg = tr("Zapis warstwy {0} nie powiódł się: {1}").format(item['name'], exc)
-                QgsMessageLog.logMessage(f"[EziudpWfsTask] {msg}", LOG_TAG, Qgis.MessageLevel.Critical)
-                self._report.errors.append(msg)
+            self._write_item(item)
         self._pending = []
         self._report.canceled = self.isCanceled()
         with contextlib.suppress(Exception):
@@ -620,7 +633,7 @@ class EziudpWfsTask(QgsTask):
             f"[EziudpWfsTask] TERYT {teryt} '{wfs_layer_name}' WFS {version}: {count} obiektów → '{layer_name}'",
             LOG_TAG, Qgis.MessageLevel.Info)
         if features:
-            self._pending.append({"name": layer_name, "fields": fields,
+            self.item_ready.emit({"name": layer_name, "fields": fields,
                                   "geom_type": geom_type, "style": style_name,
                                   "features": features,
                                   "info": {"url": wfs_url, "typename": wfs_layer_name,

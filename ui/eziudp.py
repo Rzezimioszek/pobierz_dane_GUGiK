@@ -91,6 +91,9 @@ def _start_with_boundary(dock, keys, teryt, out, label) -> None:
     def done(geom):
         if not row.running:          # anulowane w trakcie pobierania granicy
             return
+        if row.canceled:
+            row.finish(tr("Anulowano."), ok=False)
+            return
         if geom is None:
             row.finish(tr("Nie udało się pobrać granicy jednostki z PRG."), ok=False)
             row.offer_retry(lambda: _start_with_boundary(dock, keys, teryt, out, label))
@@ -106,10 +109,11 @@ def _title(keys, teryts, label) -> str:
     return f"{what} · {where}"
 
 
-def launch(dock, keys, teryts, rect, clip, out, label, row=None, pairs=None) -> None:
+def launch(dock, keys, teryts, rect, clip, out, label, row=None, pairs=None, names=None) -> None:
+    """`names` – nazwy warstw z pobrania, które ponawiamy (dopisanie do tych samych warstw)."""
     whole = rect is None
     task = EziudpWfsTask(teryts, keys, rect, clip, out, pairs, scope_text=label,
-                         powiat_rects=_powiat_rects(teryts) if whole else None)
+                         powiat_rects=_powiat_rects(teryts) if whole else None, names=names)
     if row is None:
         row = dock.tasks.add(_title(keys, teryts, label), task)
     else:
@@ -143,8 +147,9 @@ def launch(dock, keys, teryts, rect, clip, out, label, row=None, pairs=None) -> 
         row.finish(text, ok=not problems and not report.canceled and (n > 0 or not report.skipped))
         if report.failed_pairs and not report.canceled:
             failed = list(report.failed_pairs)
+            used = dict(task.names)
             row.offer_retry(lambda: launch(dock, keys, sorted({t for t, _ in failed}), rect, clip, out,
-                                           label + tr(" (ponowienie)"), pairs=failed))
+                                           label + tr(" (ponowienie)"), pairs=failed, names=used))
         if report.written:
             row.offer_show(lambda: dock._zoom_to_layers(report.written))
     dock._run(task, done)

@@ -194,8 +194,12 @@ def test_task_falls_back_to_qgis_provider(monkeypatch):
     monkeypatch.setattr(task.EziudpWfsTask, "_read_with_provider",
                         lambda self, *a: (QgsFields(), "Point", [feat], "1.1.0"))
     t = task.EziudpWfsTask(["0226"], ["egib_dzi"], output=layers.Output(None, False))
+    from qgis.core import QgsProject
+    QgsProject.instance().removeAllMapLayers()
     assert t.run() and t._report.total_features == 1 and not t._report.failed_pairs
-    assert t._pending[0]["name"] == "Dzialki_0226"
+    # warstwa zapisana od razu po pobraniu (zadanie w tym samym wątku – sygnał bezpośredni)
+    assert [lyr.name() for lyr in t._report.written] == ["Dzialki_0226"] and not t._pending
+    QgsProject.instance().removeAllMapLayers()
 
     def boom2(self, *a):
         raise RuntimeError("nie WFS")

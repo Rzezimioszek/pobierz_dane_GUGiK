@@ -470,10 +470,11 @@ class PD_GUGiKDock(QDockWidget):
             if sel.skorowidz is not None:
                 self._search_skorowidz(sel, geom)
             for s in wfs:
-                if not rows[s.label].running:   # anulowane przed pobraniem granicy
+                row = rows[s.label]
+                if not row.running or row.canceled:   # anulowane przed pobraniem granicy
                     continue
                 q = scope_mod.teryt_query(s, teryt, geom, precise=scope.precise)
-                self._download(s, [q], out, f"TERYT {teryt}", row=rows[s.label])
+                self._download(s, [q], out, f"TERYT {teryt}", row=row)
         self._run(task, got_boundary)
 
     def _ask_folder(self, key: str, title: str) -> str:
@@ -567,20 +568,47 @@ class PD_GUGiKDock(QDockWidget):
     # ------------------------------------------------------------------ pobieranie WFS
 
     def _download(self, source, queries, out, scope_text, row=None, tag=None,
-                  allow_large=False) -> None:
+                  allow_large=False, writer=None) -> None:
+        """
+        Pobieranie WFS w tle; obiekty trafiają do warstw porcjami w trakcie (StreamWriter).
+        `writer` – ponowienie / „pobierz mimo to” dopisuje do warstw tego samego pobrania.
+        """
         if not queries:
             return
         tag = self._tag if tag is None else tag
+        writer = writer or layers.StreamWriter(source, out, scope=scope_text, tag=tag)
+        start_total = writer.total       # ponowienie liczy tylko to, co samo dodało
         task = tasks.WfsDownloadTask(source, queries, self.output.selected_attributes(),
-                                     size_limit=0 if allow_large else LARGE_DOWNLOAD)
+                                     size_limit=0 if allow_large else LARGE_DOWNLOAD, stream=True)
         title = f"{SourcePicker.display_name(source)} · {scope_text}"
         if row is None:
             row = self.tasks.add(title, task)
         else:
             row.attach(task)
         task.count_changed.connect(row.set_count)
+        failure = []
+
+        def batch(b):
+            if failure:
+                return
+            try:
+                writer.append(b.features, b.prepared)
+            except Exception as exc:      # np. zablokowany plik GPKG – dalsze pobieranie nie ma sensu
+                failure.append(str(exc))
+                log.error(f"[Warstwa] {source.label}: zapis porcji nieudany: {exc}")
+                task.cancel()
+        task.batch_ready.connect(batch)
 
         def done(result):
+            if failure:
+                row.finish(tr("Nie udało się zapisać wyników: ") + failure[0], ok=False)
+                self._batch["problems"] += 1
+                return
+            if result.features:              # zadanie bez porcji (nie powinno się zdarzyć)
+                batch(tasks.Batch(result.features, result.prepared))
+            written = writer.finish()
+            n = writer.total - start_total
+            names = ", ".join(lyr.name() for lyr in written)
             if result.too_large:
                 count = f"{result.too_large:,}".replace(",", " ")
                 text = (tr("W tym zakresie jest ") + count
@@ -589,21 +617,13 @@ class PD_GUGiKDock(QDockWidget):
                     text += tr(" Dla całego powiatu lub województwa szybsza jest paczka opendata "
                                "(zakładka „Jednostka”).")
                 row.finish(text, ok=False)
-                row.offer_retry(lambda: self._download(source, queries, out, scope_text, tag=tag,
-                                                       allow_large=True),
+                rest = queries[result.too_large_at:]       # wcześniejsze zapytania są już w warstwie
+                row.offer_retry(lambda: self._download(source, rest, out, scope_text, tag=tag,
+                                                       allow_large=True, writer=writer),
                                 tr("Pobierz mimo to"), tr("Pobierz wszystkie obiekty z tego zakresu"))
+                if written:
+                    row.offer_show(lambda: self._zoom_to_layers(written))
                 return
-            n = len(result.features)
-            written = []
-            if n:
-                try:
-                    written = layers.write_source(result.features, source, out,
-                                                  scope=scope_text, tag=tag,
-                                                  prepared=result.prepared)
-                except Exception as exc:
-                    row.finish(tr("Nie udało się zapisać wyników: ") + str(exc), ok=False)
-                    return
-            names = ", ".join(lyr.name() for lyr in written)
             self._batch["objects"] += n
             self._batch["layers"].update(lyr.name() for lyr in written)
             if result.canceled or result.errors:
@@ -613,7 +633,8 @@ class PD_GUGiKDock(QDockWidget):
             elif not n and result.errors:
                 row.finish(tr("Błąd: ") + result.errors[0][1][:200], ok=False)
             elif not n:
-                row.finish(tr("Brak obiektów w tym zakresie."), ok=True)
+                row.finish(tr("Brak obiektów w tym zakresie.") if not result.count
+                           else tr("Wszystkie obiekty były już w warstwie."), ok=True)
             elif result.errors:
                 k = len(result.errors)
                 failed_txt = (tr("1 zapytanie nie powiodło się") if k == 1 else
@@ -628,7 +649,7 @@ class PD_GUGiKDock(QDockWidget):
                 failed = list(result.failed)
                 row.offer_retry(lambda: self._download(
                     source, failed, out, scope_text + tr(" (ponowienie)"), tag=tag,
-                    allow_large=allow_large))
+                    allow_large=allow_large, writer=writer))
             if written:
                 row.offer_show(lambda: self._zoom_to_layers(written))
         self._run(task, done)

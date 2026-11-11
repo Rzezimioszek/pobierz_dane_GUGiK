@@ -8,7 +8,7 @@ qgisMinimumVersion=3.40
 qgisMaximumVersion=4.99
 supportsQt6=True
 description=Pobieranie danych z usług GUGiK: EGiB, RCN, PRG, PRNG, pliki ze skorowidzów (ortofotomapa, LIDAR, NMT/NMPT) i powiatowe WFS z EZiUDP. Download data from Polish GUGiK services (cadastre, real estate prices, boundaries, place names, sheet indexes).
-version=1.9.18
+version=1.9.19
 author=Główny Urząd Geodezji i Kartografii (GUGiK) - Łukasz Świątek
 email=uslugi.iip@gugik.gov.pl
 
@@ -27,6 +27,12 @@ repository=https://github.com/GlownyUrzadGeodezjiIKartografii/pobierz_dane_GUGiK
 hasProcessingProvider=yes
 # Uncomment the following line and add your changelog:
 changelog=
+	1.9.19
+		- obiekty pojawiają się na mapie w trakcie pobierania: pierwsza porcja od razu, kolejne co ok. 2 s (obiekty przygotowywane w tle, w głównym wątku tylko dopisanie); usługi powiatowe – każda gotowa warstwa od razu
+		- anulowanie zostawia w warstwie to, co już pobrano, i pokazuje „Przerwano. Zapisano obiektów: N”
+		- poprawka: „Ponów” przy „osobnej warstwie dla każdego pobrania” dopisuje do warstwy tego pobrania zamiast tworzyć nową (Dzialki_…_2); tak samo „Pobierz mimo to” (bez ponownego pobierania już zapisanych zapytań)
+		- jeden wpis w metadanych warstwy na pobranie; mniejsze zużycie pamięci przy dużych zakresach
+		- bezpiecznik kafli: usługa, która ignoruje BBOX, albo ponad 4000 kafli – dalej zwykłe stronicowanie zamiast setek tysięcy zapytań (ostrzeżenie w dzienniku)
 	1.9.18
 		- poprawka: braki w EGiB/RCN – usługa nie podaje liczby obiektów, więc wtyczka pyta o nią każdy kafel zapytaniem resultType=hits; gdy serwer oddaje na stronę mniej obiektów, niż jest w kaflu (limit serwera), kafel jest dzielony dalej
 		- gdy usługa nie obsługuje resultType=hits albo podaje złą liczbę, wtyczka po pierwszej próbie działa jak dotąd (pełna strona = dziel kafel); w dzienniku PD_GUGiK widać, który sposób zadziałał

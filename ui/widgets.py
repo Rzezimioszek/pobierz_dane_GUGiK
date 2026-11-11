@@ -11,7 +11,7 @@ from typing import Optional
 
 from qgis.core import QgsApplication, QgsSettings
 from qgis.gui import QgsFileWidget, QgsMapLayerComboBox
-from qgis.PyQt.QtCore import Qt, pyqtSignal
+from qgis.PyQt.QtCore import Qt, QTimer, pyqtSignal
 from qgis.PyQt.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QCompleter, QFileDialog, QFrame,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit,
@@ -1032,6 +1032,8 @@ class TaskRow(QFrame):
         self._on_retry = None
         self._on_show = None
         self.running = True
+        self.canceled = False
+        self._cancel_timer = None
         if task is not None:
             task.progressChanged.connect(lambda p: self.bar.setValue(int(p)))
 
@@ -1070,14 +1072,42 @@ class TaskRow(QFrame):
         if callback is not None:
             callback()
 
+    CANCEL_TIMEOUT_MS = 15000
+
     def _cancel(self):
-        if self.task is not None:
+        """
+        Zadanie dostaje sygnał przerwania; wiersz czeka na jego wynik, bo część obiektów
+        może już być w warstwie („Przerwano. Zapisano obiektów: N”). Wiersz bez zadania
+        (np. czeka na granicę z PRG) kończy się od razu.
+        """
+        self.canceled = True
+        if self.task is None:
+            self.finish(tr("Anulowano."), ok=False)
+            return
+        try:
             self.task.cancel()
+        except RuntimeError:         # zadanie już usunięte przez menedżera zadań
+            self.finish(tr("Anulowano."), ok=False)
+            return
+        self.btn_cancel.setEnabled(False)
+        self.count.setText(tr("Przerywanie…"))
+        self.count.setVisible(True)
+        # zegar należy do wiersza – znika razem z nim (panel zamknięty w trakcie)
+        self._cancel_timer = QTimer(self)
+        self._cancel_timer.setSingleShot(True)
+        self._cancel_timer.timeout.connect(self._cancel_timeout)
+        self._cancel_timer.start(self.CANCEL_TIMEOUT_MS)
+
+    def _cancel_timeout(self) -> None:
         self.finish(tr("Anulowano."), ok=False)
 
     def finish(self, text: str, ok: bool = True) -> None:
         if not self.running:
             return
+        if self._cancel_timer is not None:
+            self._cancel_timer.stop()
+        if self.canceled and not ok and not text.startswith(tr("Przerwano.")):
+            text = tr("Anulowano.")       # błąd po anulowaniu to skutek anulowania
         self.running = False
         self.ended.emit()
         self.bar.setVisible(False)

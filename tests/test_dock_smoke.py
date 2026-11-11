@@ -587,6 +587,109 @@ def test_separate_layer_option_names_each_download(dock):
     dock.output.chk_separate.setChecked(False)
 
 
+def test_features_appear_on_map_while_downloading(dock, monkeypatch):
+    """Obiekty trafiają do warstwy porcjami w trakcie; jedna warstwa i jeden wpis w metadanych."""
+    from qgis.core import QgsApplication, QgsRectangle
+    catalog = importlib.import_module(f"{PLUGIN_NAME}.core.catalog")
+    tasks = importlib.import_module(f"{PLUGIN_NAME}.core.tasks")
+    monkeypatch.setattr(tasks.WfsDownloadTask, "FLUSH_SECONDS", 0)       # porcja po każdym kaflu
+    srv = FakeWfs(total=3000, spatial=True, unstable=True, unknown_matched=True)
+    try:
+        monkeypatch.setitem(catalog.SOURCES_BY_LABEL, "dzialki (EGIB)", dataclasses.replace(
+            catalog.SOURCES_BY_LABEL["dzialki (EGIB)"], url=srv.url))
+        dock.output.chk_separate.setChecked(True)
+        dock.sources.select_labels(["dzialki (EGIB)"])
+        dock.scope.tabs.setCurrentIndex(ScopeTab.MAP)
+        dock._start_draw("rect")
+        dock._on_rect(QgsRectangle(283990, 365990, 284600, 368000))
+        sizes = []
+        dock.start()
+        t0 = time.time()
+        while dock.running_tasks and time.time() - t0 < 30:
+            QgsApplication.processEvents()
+            from qgis.core import QgsProject
+            found = [lyr for lyr in QgsProject.instance().mapLayers().values() if lyr.name().startswith("Dzialki")]
+            if found and dock.running_tasks:
+                sizes.append(found[0].featureCount())
+            time.sleep(0.01)
+        _wait(dock)
+        from qgis.core import QgsProject
+        found = [lyr for lyr in QgsProject.instance().mapLayers().values() if lyr.name().startswith("Dzialki")]
+        assert len(found) == 1, "porcje jednego pobrania w jednej warstwie, także przy osobnych warstwach"
+        vl = found[0]
+        assert vl.featureCount() == 3000
+        assert any(0 < n < 3000 for n in sizes), "warstwa rośnie w trakcie pobierania"
+        assert len(vl.metadata().history()) == 1, "jeden wpis w metadanych na pobranie"
+        assert "3000 obiektów" in _rows(dock)[0].result.text()
+    finally:
+        dock.output.chk_separate.setChecked(False)
+        srv.close()
+
+
+def test_retry_fills_the_same_separate_layer(dock, monkeypatch):
+    """„Ponów” w trybie osobnych warstw dopisuje do warstwy tego pobrania, nie tworzy nowej."""
+    net = importlib.import_module(f"{PLUGIN_NAME}.core.net")
+    catalog = importlib.import_module(f"{PLUGIN_NAME}.core.catalog")
+    monkeypatch.setattr(net, "MAX_RETRIES", 1)
+    srv = FakeWfs(total=3, fail_filters=["ZLY"])
+    try:
+        monkeypatch.setitem(catalog.SOURCES_BY_LABEL, "dzialki (EGIB)", dataclasses.replace(
+            catalog.SOURCES_BY_LABEL["dzialki (EGIB)"], url=srv.url))
+        dock.output.chk_separate.setChecked(True)
+        dock.sources.select_labels(["dzialki (EGIB)"])
+        dock.scope.tabs.setCurrentIndex(ScopeTab.IDS)
+        ids_mod = importlib.import_module(f"{PLUGIN_NAME}.core.scope")
+        good = [f"022602_1.0003.{i}" for i in range(ids_mod.ID_BATCH)]       # pierwsze zapytanie OK
+        dock.scope.txt_ids.setPlainText("\n".join(good + ["ZLY_1"]))        # drugie – błąd serwera
+        dock.start()
+        _wait(dock)
+        row = _rows(dock)[0]
+        assert not row.btn_retry.isHidden() and _layer("Dzialki_ID_1") is not None
+        srv.fail_filters = []
+        row.btn_retry.click()
+        _wait(dock)
+        from qgis.core import QgsProject
+        names = sorted(lyr.name() for lyr in QgsProject.instance().mapLayers().values())
+        assert names == ["Dzialki_ID_1"], names
+        assert "ponowienie" in _rows(dock)[0].title.text()
+    finally:
+        dock.output.chk_separate.setChecked(False)
+        srv.close()
+
+
+def test_cancel_keeps_what_was_downloaded(dock, monkeypatch):
+    from qgis.core import QgsApplication, QgsProject, QgsRectangle
+    catalog = importlib.import_module(f"{PLUGIN_NAME}.core.catalog")
+    tasks = importlib.import_module(f"{PLUGIN_NAME}.core.tasks")
+    monkeypatch.setattr(tasks.WfsDownloadTask, "FLUSH_SECONDS", 0)
+    srv = FakeWfs(total=3000, spatial=True)
+    try:
+        monkeypatch.setitem(catalog.SOURCES_BY_LABEL, "dzialki (EGIB)", dataclasses.replace(
+            catalog.SOURCES_BY_LABEL["dzialki (EGIB)"], url=srv.url))
+        dock.sources.select_labels(["dzialki (EGIB)"])
+        dock.scope.tabs.setCurrentIndex(ScopeTab.MAP)
+        dock._start_draw("rect")
+        dock._on_rect(QgsRectangle(283990, 365990, 284600, 368000))
+        dock.start()
+        t0 = time.time()
+        while time.time() - t0 < 30:
+            QgsApplication.processEvents()
+            vl = _layer("Dzialki")
+            if vl is not None and vl.featureCount() > 0:
+                break
+            time.sleep(0.005)
+        dock.tasks.cancel_all()
+        _wait(dock)
+        vl = _layer("Dzialki")
+        row = _rows(dock)[0]
+        assert vl is not None and vl.featureCount() > 0
+        if vl.featureCount() < 3000:                       # anulowane w trakcie
+            assert "Przerwano" in row.result.text() and str(vl.featureCount()) in row.result.text()
+        assert QgsProject.instance().mapLayersByName("Dzialki") == [vl]
+    finally:
+        srv.close()
+
+
 def test_prefix_field_names_download_and_summary(dock):
     from qgis.core import QgsProject, QgsSettings
     dock.output.ed_prefix.setText("Projekt A")
