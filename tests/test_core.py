@@ -431,28 +431,65 @@ def test_unstable_paging_loses_features_but_tiles_get_all():
         srv.close()
 
 
-def test_tiles_work_when_server_hides_number_matched():
-    """MapServer usług zbiorczych EGiB/RCN: numberMatched="unknown" – kafle i tak, liczba z resultType=hits."""
+def _hidden_count_download(**server):
+    """3000 działek w prostokącie, serwer bez numberMatched (jak EGiB/RCN); zwraca (identyfikatory, serwer, zadanie)."""
     from qgis.core import QgsGeometry
     tasks, scope = mod("tasks"), mod("scope")
-    srv = FakeWfs(total=3000, spatial=True, unstable=True, unknown_matched=True)
+    srv = FakeWfs(total=3000, spatial=True, unstable=True, unknown_matched=True, **server)
+    src = _source(srv.url)
+    area = QgsGeometry.fromWkt("POLYGON((283990 365990, 284600 365990, 284600 368000, "
+                               "283990 368000, 283990 365990))")
+    task = tasks.WfsDownloadTask(src, [scope.rect_query(src, area, "prostokąt")])
+    progress = []
+    task.setProgress = lambda p: progress.append(p)
+    task.run()
+    srv.close()
+    task.progress_seen = progress
+    return [f["attrs"]["ID_DZIALKI"] for f in task.result.features], srv, task
+
+
+def _pages(srv):
+    return [r for r in srv.requests if r.get("resultType") != "hits"]
+
+
+def _hits(srv):
+    return [r for r in srv.requests if r.get("resultType") == "hits"]
+
+
+def test_hits_used_per_tile_when_service_counts():
+    """resultType=hits działa: kafle dzielone według liczby, postęp w procentach."""
+    ids, srv, task = _hidden_count_download()
+    assert len(ids) == 3000 and len(set(ids)) == 3000
+    assert all(int(r.get("startIndex", 0)) == 0 for r in _pages(srv)), "kafle, nie stronicowanie"
+    assert len(_hits(srv)) > 1, "liczba pytana dla każdego dzielonego kafla"
+    assert sum(1 for r in _pages(srv) if r["count"] == "1") == 1, "bez numberMatched nie ma próby 1 obiektu"
+    assert 0 < task.progress_seen[len(task.progress_seen) // 2] < 99
+
+
+def test_hits_catches_server_page_limit():
+    """Serwer oddaje najwyżej 400 obiektów na stronę i nie podaje liczby: hits pokazuje, że kafel jest niepełny."""
+    ids, srv, _ = _hidden_count_download(max_count=400)
+    assert len(set(ids)) == 3000
+    assert all(int(r.get("startIndex", 0)) == 0 for r in _pages(srv))
+
+
+def test_without_hits_works_as_before():
+    """Usługa nie podaje liczby ani w hits: pyta raz i dalej dzieli po pełnych stronach."""
+    for server in ({"hits": False}, {"hits_error": True}, {"hits_wrong": True}):
+        ids, srv, _ = _hidden_count_download(**server)
+        assert len(set(ids)) == 3000 and len(ids) == 3000, server
+        assert len(_hits(srv)) == 1, f"po pierwszej nieudanej liczbie już bez hits: {server}"
+        assert all(int(r.get("startIndex", 0)) == 0 for r in _pages(srv)), server
+
+
+def test_size_guard_from_hits():
+    from qgis.core import QgsGeometry
+    tasks, scope = mod("tasks"), mod("scope")
+    srv = FakeWfs(total=3000, spatial=True, unknown_matched=True)
     try:
         src = _source(srv.url)
         area = QgsGeometry.fromWkt("POLYGON((283990 365990, 284600 365990, 284600 368000, "
                                    "283990 368000, 283990 365990))")
-        task = tasks.WfsDownloadTask(src, [scope.rect_query(src, area, "prostokąt")])
-        totals = []
-        task.setProgress = lambda p: totals.append(p)
-        task.run()
-        ids = [f["attrs"]["ID_DZIALKI"] for f in task.result.features]
-        assert len(set(ids)) == 3000 and len(ids) == 3000
-        pages = [r for r in srv.requests if r.get("resultType") != "hits"]
-        assert all(int(r.get("startIndex", 0)) == 0 for r in pages), "kafle, nie stronicowanie"
-        assert sum(1 for r in srv.requests if r.get("resultType") == "hits") == 1
-        assert sum(1 for r in pages if r["count"] == "1") == 1, "bez liczby nie pytamy kafli o 1 obiekt"
-        assert 0 < totals[len(totals) // 2] < 99, "postęp z liczby z resultType=hits"
-        # ochrona przed dużym pobraniem działa też bez numberMatched
-        srv.requests.clear()
         big = tasks.WfsDownloadTask(src, [scope.rect_query(src, area, "prostokąt")], size_limit=100)
         big.run()
         assert big.result.too_large == 3000 and not big.result.features and len(srv.requests) <= 3

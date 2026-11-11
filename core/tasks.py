@@ -131,12 +131,17 @@ class WfsDownloadTask(QgsTask):
             total["n"] = matched
 
         def fetch(exact: bool) -> list:
+            def flt(rect, depth):
+                return query.filter_xml if (depth == 0 and exact) else self._tile_filter(query, rect)
+
             def request(rect, depth, start, count):
-                flt = query.filter_xml if (depth == 0 and exact) else self._tile_filter(query, rect)
-                return self.client.page(flt, start, count, self.attributes)
+                return self.client.page(flt(rect, depth), start, count, self.attributes)
+
+            def hits(rect, depth):
+                return self.client.hits(flt(rect, depth))
             fetcher = TileFetcher(request, self.isCanceled, on_total,
                                   lambda got: self._report(qi, n, got, total["n"]), self.source.label,
-                                  hits=lambda: self.client.hits(query.filter_xml))
+                                  hits=hits)
             out = fetcher.fetch(query.rect, query.clip_geom)
             if fetcher.stopped:
                 self.result.canceled = True

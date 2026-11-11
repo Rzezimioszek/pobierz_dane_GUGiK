@@ -33,11 +33,15 @@ class TileFetcher:
     on_total(n)     – liczba obiektów całego zakresu z pierwszej odpowiedzi
                       (może zgłosić wyjątek, np. „za dużo”)
     on_progress(n)  – łączna liczba pobranych obiektów
-    hits()          -> liczba obiektów całego zakresu (resultType=hits) – pytana tylko, gdy
-                      zwykła odpowiedź jej nie podaje (MapServer: numberMatched="unknown")
+    hits(rect, depth) -> liczba obiektów kafla (resultType=hits) albo -1; pytana tylko, gdy
+                      zwykła odpowiedź liczby nie podaje (MapServer: numberMatched="unknown")
 
-    Serwer bez numberMatched (usługi zbiorcze EGiB i RCN): pełna strona znaczy
-    „może być więcej” – kafel dzielimy tak samo, jak przy znanej liczbie.
+    Skąd wiadomo, że kafel trzeba podzielić:
+      1. numberMatched w odpowiedzi (GeoServer, PRG),
+      2. resultType=hits – gdy usługa go obsługuje (sprawdzane na pierwszym kaflu;
+         liczba mniejsza niż to, co przyszło na stronie = usługa niewiarygodna, dalej bez niej),
+      3. bez liczby: pełna strona znaczy „może być więcej”.
+    Strona z mniejszą liczbą obiektów niż podana liczba (limit serwera) też dzieli kafel.
     """
 
     def __init__(self, request: Callable, canceled: Callable, on_total: Optional[Callable] = None,
@@ -55,6 +59,8 @@ class TileFetcher:
         self.requests = 0
         self._seen = set()
         self._counts = None     # None – nie wiadomo jeszcze, czy serwer podaje numberMatched
+        self._hits_ok = None    # None – nie wiadomo jeszcze, czy działa resultType=hits
+        self.hits_used = 0      # ile kafli policzono przez resultType=hits (do dziennika i testów)
 
     def fetch(self, rect: Optional[QgsRectangle], area: Optional[QgsGeometry] = None) -> list:
         """Wszystkie obiekty zakresu (bez powtórzeń); `area` pozwala pominąć kafle poza zakresem."""
@@ -81,15 +87,41 @@ class TileFetcher:
             self.on_progress(self.got)
         return out
 
-    def _total(self, matched: int, ask: bool = True) -> None:
-        if matched < 0 and ask and self.hits is not None:
-            try:
-                matched = self.hits()
-            except Exception as exc:     # liczba tylko do postępu i ostrzeżenia – nie przerywa
-                log.info(f"[Pobieranie] {self.label}: liczba obiektów niedostępna ({exc})")
-                matched = -1
+    def _total(self, matched: int) -> None:
         if self.on_total:
             self.on_total(matched)
+
+    def _count_hits(self, rect, depth: int) -> int:
+        """Liczba obiektów kafla z resultType=hits; -1, gdy usługa jej nie podaje (wtedy już nie pytamy)."""
+        if self.hits is None or self._hits_ok is False:
+            return -1
+        try:
+            n = self.hits(rect, depth)
+        except Exception as exc:     # brak obsługi hits nie przerywa pobierania
+            log.info(f"[Pobieranie] {self.label}: resultType=hits nie działa ({exc}) – "
+                     f"dzielę kafle po pełnych stronach")
+            n = -1
+        if n is None or n < 0:
+            if self._hits_ok is None:
+                log.info(f"[Pobieranie] {self.label}: usługa nie podaje liczby obiektów – "
+                         f"dzielę kafle po pełnych stronach")
+            self._hits_ok = False
+            return -1
+        if self._hits_ok is None:
+            log.info(f"[Pobieranie] {self.label}: liczba obiektów z resultType=hits ({n}) – "
+                     f"kafle dzielone według niej")
+        self._hits_ok = True
+        self.hits_used += 1
+        return n
+
+    def _hits_wrong(self, hits: int, page: list) -> bool:
+        """resultType=hits podał mniej, niż przyszło na stronie – liczbie nie wolno ufać."""
+        if hits >= 0 and len(page) > hits:
+            log.warning(f"[Pobieranie] {self.label}: resultType=hits podał {hits}, a strona ma "
+                        f"{len(page)} obiektów – dalej bez hits")
+            self._hits_ok = False
+            return True
+        return False
 
     def _fetch(self, rect, depth: int) -> list:
         if self.canceled():
@@ -97,24 +129,27 @@ class TileFetcher:
             return []
         can_split = rect is not None and depth < MAX_TILE_DEPTH \
             and rect.width() > MIN_TILE and rect.height() > MIN_TILE
-        totaled = False
+        known = -1                     # liczba obiektów kafla, jeśli usługa ją zna
         if can_split and self._counts is not False:
             # liczba obiektów z małego zapytania (1 obiekt) – bez pobierania pełnej strony
-            matched = gml.number_matched(self._page(rect, depth, 0, 1))
-            self._counts = matched >= 0
-            if depth == 0:
-                self._total(matched)
-                totaled = True
-            if matched > self.page_size:
-                return self._split(rect, depth)
+            known = gml.number_matched(self._page(rect, depth, 0, 1))
+            self._counts = known >= 0
+        hits = -1
+        if can_split and known < 0:
+            hits = known = self._count_hits(rect, depth)
+        if depth == 0 and can_split:
+            self._total(known)
+        if can_split and known > self.page_size:
+            return self._split(rect, depth)
         text = self._page(rect, depth, 0, self.page_size)
         page = gml.parse_features(text)
         matched = gml.number_matched(text)
-        if depth == 0 and not totaled:
-            # bez prostokąta (np. lista ID) to i tak jedna strona – bez dodatkowego zapytania o liczbę
-            self._total(matched, ask=can_split)
-        if can_split and (matched > len(page) or (matched < 0 and len(page) >= self.page_size)):
-            # więcej obiektów niż na stronie (albo pełna strona bez liczby) – dzielimy
+        if depth == 0 and not can_split:
+            self._total(matched)     # bez prostokąta (np. lista ID) – liczba z samej strony
+        if matched < 0 and not self._hits_wrong(hits, page):
+            matched = known
+        if can_split and (matched > len(page) or len(page) >= self.page_size):
+            # więcej obiektów niż na stronie (limit serwera) albo pełna strona – dzielimy
             return self._split(rect, depth)
         features = self._keep(page)
         if (matched >= 0 and len(page) < matched) or (matched < 0 and len(page) >= self.page_size):

@@ -41,7 +41,7 @@ class FakeWfs:
 
     def __init__(self, total: int = 1005, fail_filters=(), exception_filters=(), max_count=None,
                  spatial=False, unstable=False, reject_intersects=False, unknown_matched=False,
-                 hits=True, ignore_start=False):
+                 hits=True, ignore_start=False, hits_error=False, hits_wrong=False):
         """
         `spatial`: filtr BBOX/Intersects naprawdę wybiera działki w zasięgu (prostokąt otaczający).
         `unstable`: każda odpowiedź w innej kolejności – stronicowanie gubi obiekty
@@ -50,7 +50,10 @@ class FakeWfs:
         `unknown_matched`: numberMatched="unknown" jak MapServer usług zbiorczych EGiB i RCN;
                     `hits` – czy resultType=hits podaje wtedy liczbę.
         `ignore_start`: serwer ignoruje startIndex (zawsze pierwsza strona).
+        `hits_error`: resultType=hits → ExceptionReport; `hits_wrong`: hits podaje zaniżoną liczbę.
         """
+        self.hits_error = hits_error
+        self.hits_wrong = hits_wrong
         self.unknown_matched = unknown_matched
         self.hits = hits
         self.ignore_start = ignore_start
@@ -83,6 +86,14 @@ class FakeWfs:
                     self.end_headers()
                     self.wfile.write(data)
                     return
+                if q.get("resultType") == "hits" and outer.hits_error:
+                    data = ('<ows:ExceptionReport xmlns:ows="http://www.opengis.net/ows/1.1">'
+                            '<ows:Exception><ows:ExceptionText>resultType=hits not supported'
+                            '</ows:ExceptionText></ows:Exception></ows:ExceptionReport>').encode("utf-8")
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
                 start, count = int(q.get("startIndex", 0)), int(q.get("count", 1000))
                 if outer.max_count:
                     count = min(count, outer.max_count)
@@ -109,6 +120,8 @@ class FakeWfs:
                     start = 0
                 if q.get("resultType") == "hits":
                     ids, matched = [], len(pool) if outer.hits or not outer.unknown_matched else "unknown"
+                    if outer.hits_wrong:
+                        matched = min(5, len(pool))
                 else:
                     ids = pool[start:start + count]
                     matched = "unknown" if outer.unknown_matched else len(pool)

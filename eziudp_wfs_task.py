@@ -342,26 +342,36 @@ def _read_direct(
            if k.lower() not in ("service", "request", "version", "acceptversions",
                                 "typename", "typenames")}
 
-    def request(r, depth, start, count):
+    def params_for(r) -> dict:
         params = {
             **own,
             "service": "WFS", "version": "2.0.0", "request": "GetFeature",
             "typenames": layer_name, "srsName": URN_2180,
-            "count": count, "startIndex": start,
         }
         if r is not None:
             # URN EPSG:2180 – kolejność osi N, E
             params["bbox"] = f"{r.yMinimum()},{r.xMinimum()},{r.yMaximum()},{r.xMaximum()},{URN_2180}"
-        text = net.get(session, base_url, params, timeout=180).text
+        return params
+
+    def request(r, depth, start, count):
+        text = net.get(session, base_url, {**params_for(r), "count": count, "startIndex": start},
+                       timeout=180).text
         error = gml.service_exception(text)
         if error:
             raise RuntimeError(server_error(error))
         return text
 
+    def hits(r, depth):
+        text = net.get(session, base_url, {**params_for(r), "resultType": "hits"}, timeout=120).text
+        error = gml.service_exception(text)
+        if error:
+            raise RuntimeError(server_error(error))
+        return gml.number_matched(text)
+
     features, geom_type = [], ""
     try:
         fetcher = TileFetcher(request, task_check_cancelled, on_progress=on_progress,
-                              label=f"{layer_name} ({teryt})")
+                              label=f"{layer_name} ({teryt})", hits=hits)
         raw = fetcher.fetch(rect, clip_geom)
     finally:
         with contextlib.suppress(Exception):

@@ -228,3 +228,22 @@ def test_whole_county_empty_result_falls_back_to_provider(monkeypatch):
                            powiat_rects={"0226": QgsRectangle(0, 0, 10, 10)})
     assert t.run()
     assert rects[0] == QgsRectangle(0, 0, 10, 10) and provider and t._report.total_features == 1
+
+
+def test_county_client_uses_hits_and_works_without_it():
+    import os
+    os.environ["NO_PROXY"] = "127.0.0.1,localhost"
+    from fake_wfs import FakeWfs
+    from qgis.core import QgsRectangle
+    task = importlib.import_module(f"{PLUGIN_NAME}.eziudp_wfs_task")
+    rect = QgsRectangle(284000, 366000, 284390, 367990)          # 2000 działek
+    for server, hits_expected in (({"max_count": 400}, True), ({"hits": False}, False)):
+        srv = FakeWfs(total=2500, spatial=True, unstable=True, unknown_matched=True, **server)
+        try:
+            _, _, feats = task._read_direct(srv.url, "ms:dzialki", rect, None, "0226",
+                                            srv.url + "?map=x", lambda: False)
+        finally:
+            srv.close()
+        hits = [r for r in srv.requests if r.get("resultType") == "hits"]
+        assert len({f["attrs"]["gml_id"] for f in feats}) == 2000, server
+        assert (len(hits) > 1) == hits_expected and all(r["map"] == "x" and "bbox" in r for r in hits)
